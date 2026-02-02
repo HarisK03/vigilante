@@ -3,11 +3,11 @@
 import Image from "next/image";
 import { useEffect, useState } from "react";
 
-// 
+// app/components/...
 import AuthPanel from "./components/AuthPanel";
 import EndorseButton from "./components/EndorseButton";
 
-// 
+// use lib/supabase/client.ts
 import { supabase } from "../lib/supabase/client";
 
 type ReportRow = {
@@ -141,7 +141,7 @@ function ReportsView({ onBack }: { onBack: () => void }) {
         </div>
       </div>
 
-      {/* sign in /out for testing*/}
+      {/* test only*/}
       <div className="mb-6">
         <AuthPanel />
       </div>
@@ -175,7 +175,7 @@ function ReportsView({ onBack }: { onBack: () => void }) {
                 </div>
               ) : null}
 
-              {/* EndorseButton */}
+              {/* make EndorseButton */}
               <div className="mt-3">
                 <EndorseButton reportId={r.id} />
               </div>
