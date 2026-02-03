@@ -1,15 +1,15 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
 export enum UserTier {
-    TIER3 = "authority",
-    TIER2 = "admin",
-    TIER1 = "regular_user"
+    TIER3 = 3,
+    TIER2 = 2,
+    TIER1 = 1
 }
 
 export enum RequestStatus {
-    PENDING = "pending",
-    APPROVED = "approved",
-    DENIED = "denied",
-    CANCELLED = "cancelled"
+    PENDING = "PENDING",
+    APPROVED = "APPROVED",
+    DENIED = "DENIED",
+    CANCELLED = "CANCELLED"
 }
 
 export interface ApprovalResponse {
@@ -97,7 +97,6 @@ export class AuthorizationEngine {
             status: RequestStatus.APPROVED,
             reviewed_at: new Date().toISOString(),
             reviewed_by: reviewerId,
-            updated_at: new Date().toISOString()
         })
         .eq('id', requestId)
         .select()
