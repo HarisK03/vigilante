@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from "@/lib/supabase/server-client";
+import { createSupabaseServerClient } from "@/lib/supabase/server-client";
 export enum UserTier {
     TIER3 = "authority",
     TIER2 = "admin",
@@ -25,10 +25,15 @@ export interface AuthorizationCheck {
 }
 
 export class AuthorizationEngine {
-    private supabase: SupabaseClient;
+    private supabase;
 
-    constructor(supabaseUrl: string, supabaseKey: string) {
-        this.supabase = createClient(supabaseUrl, supabaseKey);
+    constructor(supabaseClient: any) {
+        this.supabase = supabaseClient;
+    }
+
+    static async create(): Promise<AuthorizationEngine> {
+        const supabase = await createSupabaseServerClient();
+        return new AuthorizationEngine(supabase);
     }
 
     async canReviewRequests(userId: string): Promise<boolean> {
