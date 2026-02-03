@@ -6,6 +6,7 @@ export enum Tier {
 
 export const RoutePermissions: Record<string, Tier[]> = {
 	"/test": [Tier.Authority], // only authorities
+	"/assign": [Tier.Authority],
 };
 
 export function isAuthorized(path: string, tier: Tier) {
