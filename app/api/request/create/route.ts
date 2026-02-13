@@ -1,39 +1,50 @@
-// usage: POST /api/report/create
-// body: { description?: string, type: ReportType, latitude?: number, longitude?: number }
+// usage: POST /api/request/create
+// body: { resource_type: ResourceType, quantity: number, latitude?: number, longitude?: number, description?: string }
+// anyone can create a request
 
 import { NextRequest, NextResponse } from "next/server";
-import { insertRow } from "@/lib/supabase/utils";
+import { insertRow, getById } from "@/lib/supabase/utils";
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
 import { ApiErrors } from "@/lib/api-errors";
-import { ReportType, ReportStatus } from "@/lib/types";
+import { ResourceType } from "@/lib/types";
 
-interface Report {
+interface Request {
 	id?: string;
-	description?: string;
-	type: ReportType;
-	location?: {
-		latitude: number;
-		longitude: number;
-	};
+	requester_id: string;
+	status?: string;
+	resource_type: ResourceType;
+	quantity: number;
 	latitude?: number;
 	longitude?: number;
-	status?: ReportStatus;
-	user_id: string;
+	description?: string;
 	created_at?: string;
 	updated_at?: string;
 }
 
-function isValidReportType(value: any): value is ReportType {
-	return Object.values(ReportType).includes(value);
+function isValidResourceType(value: any): value is ResourceType {
+	return Object.values(ResourceType).includes(value);
 }
 
 export async function POST(req: NextRequest) {
 	try {
 		const body = await req.json();
-		const { description, type, latitude, longitude } = body;
+		const { resource_type, quantity, latitude, longitude, description } =
+			body;
 
-		// Validate type
-		if (!isValidReportType(type)) {
+		// Validate resource type
+		if (!isValidResourceType(resource_type)) {
+			return NextResponse.json(ApiErrors.FORM_VALIDATION, {
+				status: ApiErrors.FORM_VALIDATION.code,
+			});
+		}
+
+		// Validate quantity
+		if (
+			quantity === undefined ||
+			quantity === null ||
+			quantity <= 0 ||
+			typeof quantity !== "number"
+		) {
 			return NextResponse.json(ApiErrors.FORM_VALIDATION, {
 				status: ApiErrors.FORM_VALIDATION.code,
 			});
@@ -57,16 +68,16 @@ export async function POST(req: NextRequest) {
 			});
 		}
 
-		const reportData: Report = {
-			description,
-			type,
+		const requestData: Request = {
+			requester_id: user.id,
+			resource_type,
+			quantity,
 			latitude,
 			longitude,
-			status: ReportStatus.Unverified,
-			user_id: user.id,
+			description,
 		};
 
-		const data = await insertRow<Report>("reports", reportData);
+		const data = await insertRow<Request>("requests", requestData);
 
 		if (!data) {
 			return NextResponse.json(ApiErrors.SERVER_ERROR, {

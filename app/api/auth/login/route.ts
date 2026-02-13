@@ -1,5 +1,9 @@
+// usage: POST /api/auth/login
+// body: { email: string, password: string }
+
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
+import { ApiErrors } from "@/lib/api-errors";
 
 export async function POST(req: Request) {
 	const { email, password } = await req.json();
@@ -12,7 +16,9 @@ export async function POST(req: Request) {
 	});
 
 	if (error) {
-		return NextResponse.json({ error: error.message }, { status: 400 });
+		return NextResponse.json(ApiErrors.INVALID_CREDENTIALS, {
+			status: ApiErrors.INVALID_CREDENTIALS.code,
+		});
 	}
 
 	return NextResponse.json({ success: true });

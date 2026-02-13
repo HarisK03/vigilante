@@ -23,7 +23,13 @@ export async function getRow<T>(
 	}
 
 	const { data, error } = await query.single();
+
+	// Handle "no rows found" error gracefully
 	if (error) {
+		if (error.code === "PGRST116") {
+			// No rows found - return null instead of throwing error
+			return null;
+		}
 		console.error(`Error fetching row from ${table}:`, error);
 		return null;
 	}
@@ -157,6 +163,10 @@ export async function updateById<T>(
 		.single();
 
 	if (error) {
+		if (error.code === "PGRST116") {
+			// No rows found - return null instead of throwing error
+			return null;
+		}
 		console.error(`Error updating row in ${table}:`, error);
 		return null;
 	}
@@ -241,6 +251,10 @@ export async function upsertRow<T>(
 		.single();
 
 	if (error) {
+		if (error.code === "PGRST116") {
+			// No rows found - return null instead of throwing error
+			return null;
+		}
 		console.error(`Error upserting row in ${table}:`, error);
 		return null;
 	}
