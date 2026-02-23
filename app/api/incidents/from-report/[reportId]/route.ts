@@ -27,7 +27,7 @@ export async function POST(
   // Pull the report and verify it's VERIFIED
   const { data: report, error: repErr } = await supabase
     .from("reports")
-    .select("id, title, type, location, status, endorsements, created_at")
+    .select("id,type,description,latitude,longitude,status,user_id,created_at")
     .eq("id", reportId)
     .single();
 

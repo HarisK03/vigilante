@@ -14,9 +14,7 @@ export async function GET() {
 
 	const { data, error } = await supabase
 		.from("incidents")
-		.select(
-			"id,title,description,status,priority,report_id,latitude,longitude,created_at,updated_at,closed_at,reports(latitude,longitude,type,description)",
-		)
+		.select("id,title,description,type,status,priority,report_id,latitude,longitude,created_at,updated_at,closed_at,reports(latitude,longitude,type,description)")
 		.order("updated_at", { ascending: false });
 
 	if (error) {
@@ -53,6 +51,7 @@ export async function GET() {
 					lng,
 					createdAt: row.created_at,
 					updatedAt: row.updated_at,
+					type: row.type,
 					closedAt: row.closed_at,
 				};
 			})
@@ -81,10 +80,22 @@ export async function POST(req: Request) {
 	}
 
 	const body = await req.json().catch(() => ({}));
-	const status =
-		typeof body?.status === "string" && body.status.trim().length > 0
-			? body.status.trim()
-			: "ACTIVE";
+
+	const ALLOWED_TYPES = new Set([
+		"fire", "flood", "severe_weather", "road_closure", "hazmat", "others",
+	]);
+
+	const type =
+		typeof body?.type === "string" && ALLOWED_TYPES.has(body.type)
+			? body.type
+			: "others";
+
+	const ALLOWED_STATUS = new Set(["active", "paused", "closed"]);
+
+	const statusRaw =
+		typeof body?.status === "string" ? body.status.trim().toLowerCase() : "";
+
+	const status = ALLOWED_STATUS.has(statusRaw) ? statusRaw : "active";
 
 	//Edit by Kenson
 	const latRaw = body?.latitude ?? body?.lat ?? null;
@@ -121,13 +132,14 @@ export async function POST(req: Request) {
 		.insert({
 			title,
 			description,
+			type,             
 			status,
 			...(priority ? { priority } : {}),
 			...(reportId ? { report_id: reportId } : {}),
 			created_by: userRes.user.id,
 			latitude,
 			longitude,
-			closed_at: null,
+			closed_at: status === "closed" ? new Date().toISOString() : null,
 		})
 		.select("*")
 		.single();

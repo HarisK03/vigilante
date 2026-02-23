@@ -1,4 +1,4 @@
-﻿// File path: app/test/map/MobileMapPage.tsx
+﻿// File path: app/map/MobileMapPage.tsx
 // Purpose: Mobile layout for incidents map (map + bottom list)
 
 "use client";
