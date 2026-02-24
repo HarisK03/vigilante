@@ -1,7 +1,26 @@
-// app/dashboard/citizen/page.tsx
-
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import { createSupabaseServerClient } from "@/lib/supabase/server-client";
 import Sidebar from "@/util/sidebar";
+
+type ReportRow = {
+  id: string;
+  description: string | null;
+  type: string | null;
+  status: string | null;
+  created_at: string | null;
+};
+
+type IncidentRow = {
+  id: string;
+  title: string | null;
+  status: string | null;
+  created_at: string | null;
+};
+
+type RequestRow = {
+  id: string;
+};
 
 function TierBadge({ tier }: { tier: 1 | 2 | 3 }) {
   const tierText = tier === 1 ? "Citizen" : tier === 2 ? "Volunteer" : "Authority";
@@ -83,7 +102,6 @@ function StatBox({ label, value }: { label: string; value: number | string }) {
   );
 }
 
-
 function ReportSquare({ title, type, date }: { title: string; type: string; date: string }) {
   return (
     <div className="flex flex-col justify-between rounded-xl border border-white/10 bg-white/[0.04] p-4">
@@ -96,14 +114,57 @@ function ReportSquare({ title, type, date }: { title: string; type: string; date
   );
 }
 
-export default function CitizenDashboardPage() {
+function formatDate(ts: string | null) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+export default async function CitizenDashboardPage() {
   const SIDEBAR_W = 84;
-  const username = "arshin";
-  const tier: 1 | 2 | 3 = 1;
-  const myReportsCount = 0;
-  const myIncidentsCount = 0;
-  const myRequestsCount: number | string = "—";
-  const recentReports: { title: string; type: string; date: string }[] = [];
+  const supabase = await createSupabaseServerClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) notFound();
+
+  const username = user.user_metadata?.username ?? user.email?.split("@")[0] ?? "user";
+  const tier = ((user.user_metadata?.tier ?? 1) as 1 | 2 | 3);
+
+  const [
+    { data: reportsRaw, error: reportsErr },
+    { data: incidentsRaw, error: incidentsErr },
+    { data: requestsRaw, error: requestsErr },
+  ] = await Promise.all([
+    supabase
+      .from("reports")
+      .select("id,description,type,status,created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(2),
+    supabase
+      .from("incidents")
+      .select("id,title,status,created_at")
+      .eq("created_by", user.id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("requests")
+      .select("id")
+      .eq("requester_id", user.id),
+  ]);
+
+  if (reportsErr) throw new Error(reportsErr.message);
+  if (incidentsErr) throw new Error(incidentsErr.message);
+  if (requestsErr) throw new Error(requestsErr.message);
+
+  const reports = (reportsRaw as ReportRow[]) ?? [];
+  const incidents = (incidentsRaw as IncidentRow[]) ?? [];
+  const requests = (requestsRaw as RequestRow[]) ?? [];
+
+  const recentReports = reports.slice(0, 2).map((r) => ({
+    title: r.description ?? r.type ?? "Report",
+    type: r.type ?? "report",
+    date: formatDate(r.created_at),
+  }));
 
   return (
     <main className="relative h-screen overflow-hidden bg-[#0b0b0c] text-[#D9D9D9]">
@@ -114,7 +175,6 @@ export default function CitizenDashboardPage() {
         style={{ left: SIDEBAR_W }}
       >
 
-        {/* ── Header ── */}
         <header className="flex shrink-0 items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.04] px-7 py-5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
           <div>
             <div className="mb-2">
@@ -129,13 +189,11 @@ export default function CitizenDashboardPage() {
           </div>
         </header>
 
-        {/* ── 2 × 2 grid ── */}
         <div
           className="grid min-h-0 flex-1 gap-4"
           style={{ gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" }}
         >
 
-          {/* Quick Actions */}
           <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
             <CardHeader
               title="Quick Actions"
@@ -150,7 +208,6 @@ export default function CitizenDashboardPage() {
             </div>
           </div>
 
-          {/* Recent Reports */}
           <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
             <CardHeader
               title="Recent Reports"
@@ -179,25 +236,21 @@ export default function CitizenDashboardPage() {
             </div>
           </div>
 
-          {/* Status */}
           <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
             <CardHeader title="Status" subtitle="Your recent activity summary." />
-            {/* scrollable body */}
             <div className="flex flex-1 gap-4 overflow-y-auto p-6">
-              <StatBox label="My reports" value={myReportsCount} />
-              <StatBox label="My incidents" value={myIncidentsCount} />
-              <StatBox label="Requests" value={myRequestsCount} />
+              <StatBox label="My reports" value={reports.length} />
+              <StatBox label="My incidents" value={incidents.length} />
+              <StatBox label="Requests" value={requests.length} />
             </div>
           </div>
 
-          {/* Nearby Incidents */}
           <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
             <CardHeader
               title="Nearby Incidents"
               subtitle="Quick peek at what's active."
               right={<PillButton href="/incidents-catalog">Open</PillButton>}
             />
-            {/* scrollable body */}
             <div className="flex flex-1 flex-col overflow-y-auto p-6">
               <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] p-6 text-center">
                 <p className="text-sm font-semibold text-[#D9D9D9]">None pinned</p>
@@ -210,7 +263,6 @@ export default function CitizenDashboardPage() {
 
         </div>
 
-        {/* ── Footer ── */}
         <p className="shrink-0 text-center text-[11px] text-[#D9D9D9]/25">
           DispatchNow • citizen dashboard
         </p>
