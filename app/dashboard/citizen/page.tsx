@@ -127,8 +127,16 @@ export default async function CitizenDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) notFound();
 
-  const username = user.user_metadata?.username ?? user.email?.split("@")[0] ?? "user";
-  const tier = ((user.user_metadata?.tier ?? 1) as 1 | 2 | 3);
+  const { data: profile, error: profileErr } = await supabase
+    .from("profiles")
+    .select("username, tier")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (profileErr) throw new Error(profileErr.message);
+
+  const username = profile?.username ?? user.email?.split("@")[0] ?? "user";
+  const tier = ((profile?.tier ?? 1) as 1 | 2 | 3);
 
   const [
     { data: reportsRaw, error: reportsErr },
