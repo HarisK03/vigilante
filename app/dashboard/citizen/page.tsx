@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
 import Sidebar from "@/util/sidebar";
+import GlobalSearch from "./GlobalSearch";
 
 type ReportRow = {
   id: string;
@@ -192,6 +193,7 @@ export default async function CitizenDashboardPage() {
             <p className="mt-1 text-sm text-[#D9D9D9]/45">@{username}</p>
           </div>
           <div className="flex items-center gap-3">
+            <GlobalSearch />
             <PillButton href={`/profile/${username}`}>View Profile</PillButton>
             <PillButton href="/report/new" variant="red">Create Report</PillButton>
           </div>
