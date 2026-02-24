@@ -1,4 +1,5 @@
 // app/dashboard/citizen/page.tsx
+
 import Link from "next/link";
 import Sidebar from "@/util/sidebar";
 
@@ -45,7 +46,7 @@ function WideButton({
   variant?: "ghost" | "red";
 }) {
   const cls = [
-    "flex w-full items-center justify-center rounded-xl border px-6 py-4 text-sm font-medium transition",
+    "flex w-full items-center justify-center rounded-xl border px-2 py-3 text-xs font-medium transition",
     variant === "red"
       ? "border-transparent bg-[#8B000D] text-white hover:brightness-110"
       : "border-white/10 bg-white/[0.04] text-[#D9D9D9] hover:bg-white/10",
@@ -82,6 +83,19 @@ function StatBox({ label, value }: { label: string; value: number | string }) {
   );
 }
 
+
+function ReportSquare({ title, type, date }: { title: string; type: string; date: string }) {
+  return (
+    <div className="flex flex-col justify-between rounded-xl border border-white/10 bg-white/[0.04] p-4">
+      <div>
+        <p className="text-[10px] font-medium uppercase tracking-widest text-[#D9D9D9]/40">{type}</p>
+        <p className="mt-1 text-sm font-semibold text-[#D9D9D9] leading-snug">{title}</p>
+      </div>
+      <p className="mt-3 text-xs text-[#D9D9D9]/40">{date}</p>
+    </div>
+  );
+}
+
 export default function CitizenDashboardPage() {
   const SIDEBAR_W = 84;
   const username = "arshin";
@@ -89,6 +103,7 @@ export default function CitizenDashboardPage() {
   const myReportsCount = 0;
   const myIncidentsCount = 0;
   const myRequestsCount: number | string = "—";
+  const recentReports: { title: string; type: string; date: string }[] = [];
 
   return (
     <main className="relative h-screen overflow-hidden bg-[#0b0b0c] text-[#D9D9D9]">
@@ -132,11 +147,11 @@ export default function CitizenDashboardPage() {
               subtitle="Common things you'll do as a citizen."
               right={<PillButton href="/dashboard/citizen/shortcuts">Shortcuts</PillButton>}
             />
-            {/* scrollable body */}
-            <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-6">
-              <WideButton href="/report/new" variant="red">Create a new report</WideButton>
-              <WideButton href="/incidents-catalog">Browse incident catalog</WideButton>
-              <WideButton href="/reports-catalog">Browse reports catalog</WideButton>
+            <div className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-6" style={{ gridAutoRows: "1fr" }}>
+              <WideButton href="/report/new" variant="red">Create report</WideButton>
+              <WideButton href="/incidents-catalog">Browse incidents</WideButton>
+              <WideButton href="/reports-catalog">Browse reports</WideButton>
+              <WideButton href="/resource-catalog">Browse resources</WideButton>
             </div>
           </div>
 
@@ -147,17 +162,25 @@ export default function CitizenDashboardPage() {
               subtitle="Your latest submissions."
               right={<PillButton href="/reports-catalog">See all</PillButton>}
             />
-            {/* scrollable body */}
-            <div className="flex flex-1 flex-col overflow-y-auto p-6">
-              <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] p-6 text-center">
-                <p className="text-sm font-semibold text-[#D9D9D9]">No reports yet</p>
-                <p className="mt-1.5 text-xs text-[#D9D9D9]/45">
-                  Create one to start tracking activity here.
-                </p>
-                <div className="mt-5">
-                  <PillButton href="/report/new" variant="red">Create Report</PillButton>
-                </div>
-              </div>
+            <div className="grid flex-1 grid-cols-2 gap-4 p-6">
+              {recentReports[0] ? (
+                <ReportSquare title={recentReports[0].title} type={recentReports[0].type} date={recentReports[0].date} />
+              ) : (
+                <Link href="/report/new" className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center hover:bg-white/[0.07] transition">
+                  <p className="text-sm font-semibold text-[#D9D9D9]">Create Report</p>
+                  <p className="mt-1 text-xs text-[#D9D9D9]/40">Submit your first report</p>
+                </Link>
+              )}
+              {recentReports[1] ? (
+                <ReportSquare title={recentReports[1].title} type={recentReports[1].type} date={recentReports[1].date} />
+              ) : recentReports[0] ? (
+                <Link href="/report/new" className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center hover:bg-white/[0.07] transition">
+                  <p className="text-sm font-semibold text-[#D9D9D9]">Create Report</p>
+                  <p className="mt-1 text-xs text-[#D9D9D9]/40">Submit another report</p>
+                </Link>
+              ) : (
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.02]" />
+              )}
             </div>
           </div>
 
