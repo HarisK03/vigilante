@@ -25,12 +25,18 @@ function parseQuery(q: string): { text: string; type?: EntityType; from?: string
     }
 
     if (p.startsWith("from:")) {
-      from = p.slice("from:".length).trim();
+      if (p.startsWith("from:")) {
+        from = p.slice("from:".length).trim();
+        continue;
+    }
       continue;
     }
 
     if (p.startsWith("status:")) {
-      status = p.slice("status:".length).trim().toLowerCase();
+      if (p.startsWith("status:")) {
+        status = p.slice("status:".length).trim().toLowerCase();
+        continue;
+}
       continue;
     }
 
@@ -42,7 +48,7 @@ function parseQuery(q: string): { text: string; type?: EntityType; from?: string
 
 function splitOrTerms(s: string) {
   return s
-    .split(/[\/|]/g) // 支持 a/b 或 a|b
+    .split(/[\/|]/g) // support a/b or a|b
     .map((x) => x.trim())
     .filter(Boolean);
 }
@@ -50,6 +56,19 @@ function splitOrTerms(s: string) {
 const pat = (s: string) => `%${s}%`;
 const buildIlikeOr = (col: string, terms: string[]) =>
   terms.map((t) => `${col}.ilike.${pat(t)}`).join(",");
+
+// friendly status projection：let status:open also match pending/unverified/active depending on the entity type
+function mapStatus(entity: EntityType, s: string): string[] {
+  const v = s.toLowerCase();
+
+  if (v === "open") {
+    if (entity === "request") return ["pending"];
+    if (entity === "report") return ["unverified"];
+    if (entity === "incident") return ["active"];
+  }
+
+  return [v];
+}
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -67,7 +86,7 @@ export async function GET(req: Request) {
 
   const results: any[] = [];
 
-  // ✅ 1) from:xxx —— 保留：只负责跳转 profile（不影响其它功能）
+  // 1) from:xxx —— jump to profile
   if (parsed.from) {
     const { data } = await supabase
       .from("profiles")
@@ -87,7 +106,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ results });
   }
 
-  // ✅ 2) REPORTS —— 保留：按 description 搜；新增：type:report 无关键词列出最近 5 条
+  // 2) REPORTS —— search by description
   if (!parsed.type || parsed.type === "report") {
     let rq = supabase
       .from("reports")
@@ -95,17 +114,18 @@ export async function GET(req: Request) {
       .order("created_at", { ascending: false })
       .limit(5);
 
+    const allowList = parsed.type === "report" || !!parsed.status; 
+
     if (terms.length > 0) {
       rq = rq.or(buildIlikeOr("description", terms));
-    } else if (parsed.type === "report") {
-      // ✅ 新增：type-only 列表
-      // 不加任何过滤，直接 recent 5
-    } else {
-      // 没指定 type 且没关键词：避免返回一堆
+    } else if (!allowList) {
       rq = rq.limit(0);
     }
 
-    if (parsed.status) rq = rq.eq("status", parsed.status); // enum 用 eq 更稳
+    if (parsed.status) {
+      const statuses = mapStatus("report", parsed.status);
+      rq = statuses.length > 1 ? rq.in("status", statuses) : rq.eq("status", statuses[0]);
+    }
 
     const { data } = await rq;
 
@@ -120,7 +140,7 @@ export async function GET(req: Request) {
     );
   }
 
-  // ✅ 3) REQUESTS —— 保留：按 resource_type 搜；新增：type:request 无关键词列出最近 5 条
+  // 3) REQUESTS —— search by resource_type
   if (!parsed.type || parsed.type === "request") {
     let qq = supabase
       .from("requests")
@@ -128,17 +148,18 @@ export async function GET(req: Request) {
       .order("created_at", { ascending: false })
       .limit(5);
 
+    const allowList = parsed.type === "request" || !!parsed.status;
+
     if (termsLower.length > 0) {
-      // 保留：request “type” 搜索（resource_type enum）
       qq = qq.in("resource_type", termsLower);
-    } else if (parsed.type === "request") {
-      // ✅ 新增：type-only 列表
-      // 不加过滤，直接 recent 5
-    } else {
+    } else if (!allowList) {
       qq = qq.limit(0);
     }
 
-    if (parsed.status) qq = qq.eq("status", parsed.status); // enum 用 eq
+    if (parsed.status) {
+      const statuses = mapStatus("request", parsed.status);
+      qq = statuses.length > 1 ? qq.in("status", statuses) : qq.eq("status", statuses[0]);
+    }
 
     const { data } = await qq;
 

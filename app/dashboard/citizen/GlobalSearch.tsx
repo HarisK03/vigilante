@@ -98,7 +98,7 @@ const SUGGESTIONS: Suggestion[] = [
 ];
 
 function parseInsert(key: string) {
-  // Discord 风格：插入后给一个空格，方便直接继续输入
+  // Discord style: insert the key, and if it's type: or status:, also add a trailing : so user can immediately type the value
   return `${key}`;
 }
 
@@ -148,6 +148,14 @@ export default function GlobalSearch() {
     setQ(parseInsert(key));
     setOpen(true);
     requestAnimationFrame(() => inputRef.current?.focus());
+      // setTimeout to ensure the input is focused after the dropdown opens and state updates, allowing the user to immediately type the filter value without an extra click
+    setTimeout(() => {
+      if (inputRef.current) {
+        const len = inputRef.current.value.length;
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(len, len);
+      }
+    }, 0);
   };
 
   return (
@@ -218,12 +226,12 @@ export default function GlobalSearch() {
                     className="w-full rounded-xl px-3 py-2 text-left transition border border-transparent bg-transparent hover:border-white/10 hover:bg-white/[0.07] active:scale-[0.99]"
                 >
                     <div className="flex items-center justify-between gap-3">
-                    {/* 左侧 keyword pill */}
+                    {/* left: keyword pill */}
                     <span className="shrink-0 rounded-md bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-white/85">
                         {s.key}
                     </span>
 
-                    {/* 右侧 example（单行，超出省略号） */}
+                    {/* right: example */}
                     <span className="min-w-0 flex-1 text-right font-mono text-[11px] text-white/70 truncate">
                         {s.example}
                     </span>
