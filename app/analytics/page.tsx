@@ -5,7 +5,7 @@ const REPORTS_TABLE = "reports";
 const REQUESTS_TABLE = "requests";
 const RESOURCES_TABLE = "resources";
 
-const CHART_DAYS = 30; // ✅ change to 7/14/30 as you like
+const CHART_DAYS = 30; // change to 7/14/30 as you like
 
 type ReportRow = {
   id: string;
