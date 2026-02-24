@@ -31,6 +31,8 @@ const TORONTO_CENTER = { lat: 43.6532, lng: -79.3832 };
 const INCIDENT_TYPE_OPTIONS = [
     { value: "fire", label: "Fire" },
     { value: "flood", label: "Flood" },
+    { value: "severe_weather", label: "Severe Weather" },
+    { value: "road_closure", label: "Road Closure" },
     { value: "hazmat", label: "Hazmat" },
     { value: "others", label: "Others" },
 ] as const;
