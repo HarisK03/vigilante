@@ -29,6 +29,8 @@ import DispatchNowMap, {
     type ReportForMap,
 } from "@/app/components/maps/DispatchNowMap";
 
+import Sidebar from "@/util/sidebar";
+
 export enum ReportType {
     Pothole = "pothole",
     Flooding = "flooding",
@@ -490,7 +492,9 @@ export default function DesktopMapPage({
     }
 
     return (
-        <div className="h-screen w-screen flex bg-zinc-950 text-zinc-100">
+        <div className="h-screen w-screen bg-zinc-950 text-zinc-100">
+            <Sidebar activeHref="/map" />
+            <div className="h-full w-full flex pl-[84px]">
             {/* Sidebar */}
             <aside className="w-[420px] shrink-0 border-r border-zinc-800 bg-zinc-950 p-4 overflow-auto">
                 <div className="flex items-start justify-between gap-3">
@@ -944,6 +948,7 @@ export default function DesktopMapPage({
                     </div>
                 )}
             </main>
+            </div>
         </div>
     );
 }
