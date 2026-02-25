@@ -1,8 +1,8 @@
 from conftest import BASE_URL
 import requests
 
-def user_can_remove_a_resource(tier3_login, supabase_client):
-    name = "user can remove a resource test"
+def user_can_delete_a_resource(tier3_login, supabase_client):
+    name = "user can delete a resource test"
     payload = {
         "name": name,
         "type": "food",
@@ -17,11 +17,9 @@ def user_can_remove_a_resource(tier3_login, supabase_client):
     assert result.data, "Resource was not created"
     resource_id = result.data[0]["id"]
 
-    response = requests.post(f"{BASE_URL}/api/resource/{resource_id}/remove",
+    response = requests.post(f"{BASE_URL}/api/resource/{resource_id}/delete",
                             json={}, cookies=tier3_login.cookies, timeout=10)
     assert response.status_code == 200, f"Unexpected response {response.json()}"
 
     result = supabase_client.table("resources").select("*").eq("name", name).execute()
-    assert not result.data, "Resource was not removed"
-
-    # feature not implemented yet
+    assert not result.data, "Resource was not deleted"
