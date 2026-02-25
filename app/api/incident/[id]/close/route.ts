@@ -1,53 +1,106 @@
+// usage: POST /api/incident/[id]/close
+// body: { description?: string }
+// only tier 3 (Authority) can close incidents
+
+import { NextRequest, NextResponse } from "next/server";
+import { updateById, getById } from "@/lib/supabase/utils";
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
-import { NextResponse } from "next/server";
+import { ApiErrors } from "@/lib/api-errors";
+import { IncidentStatus, Tier } from "@/lib/types";
 
-// creates the POST functionality
-export async function POST(request: Request, {params}: {params: {id: string}}) {
-    // collects from [id] (this is a directory and field name is filled for each incident)
-    const incidentId = params.id;
-    // connects to Supabase server
-    const supabase = await createSupabaseServerClient();
+interface Incident {
+    id: string;
+    title: string;
+    description?: string | null;
+    status: IncidentStatus | string;
+    priority: string;
+    report_id?: string | null;
+    created_by: string;
+    created_at: string;
+    updated_at: string;
+    closed_at?: string | null;
+}
 
-    // selects the row which has incident id matching to [id]
-    const {data: incident, error} = await supabase
-        .from("incidents")
-        .select("*")
-        .eq("id", incidentId)
-        .single();
+interface Profile {
+    id: string;
+    tier: Tier;
+}
 
-    // error if failed to find row or incident does not exist
-    if (error || !incident) {
-        return NextResponse.json(
-            { error: "Incident not found" },
-            { status: 404 }
-        );
+async function checkAuthority(userId: string): Promise<boolean> {
+    const profile = await getById<Profile>("profiles", userId);
+    return profile?.tier === Tier.Authority;
+}
+
+export async function POST(
+    req: NextRequest,
+    { params }: { params: { id: string } }
+) {
+    try {
+        const { id } = params;
+
+        const body = await req.json().catch(() => ({}));
+        const description = (body as any)?.description;
+
+        const supabase = await createSupabaseServerClient();
+        const {
+            data: { user },
+            error: authError,
+        } = await supabase.auth.getUser();
+
+        if (authError || !user) {
+            return NextResponse.json(ApiErrors.UNAUTHORIZED, {
+                status: ApiErrors.UNAUTHORIZED.code,
+            });
+        }
+
+        // Check if user is Authority (tier 3)
+        const isAuthority = await checkAuthority(user.id);
+        if (!isAuthority) {
+            return NextResponse.json(ApiErrors.UNAUTHORIZED, {
+                status: ApiErrors.UNAUTHORIZED.code,
+            });
+        }
+
+        // Verify incident exists
+        const existing = await getById<Incident>("incidents", id);
+        if (!existing) {
+            return NextResponse.json({ error: "Incident not found" }, { status: 404 });
+        }
+
+        // Cannot close a closed incident
+        const existingStatusUpper = String((existing as any)?.status ?? "").toUpperCase();
+        const closedEnumUpper = String(IncidentStatus.Closed).toUpperCase();
+        if (existingStatusUpper === "CLOSED" || existingStatusUpper === closedEnumUpper) {
+            return NextResponse.json(
+                { error: "Incident is already closed" },
+                { status: 400 }
+            );
+        }
+
+        // Build update object
+        const updates: Partial<Incident> = {
+            status: IncidentStatus.Closed,
+            closed_at: new Date().toISOString(),
+        };
+
+        if (description !== undefined) {
+            updates.description = typeof description === "string" ? description : null;
+        }
+
+        const data = await updateById<Incident>("incidents", id, updates);
+
+        if (!data) {
+            return NextResponse.json(ApiErrors.SERVER_ERROR, {
+                status: ApiErrors.SERVER_ERROR.code,
+            });
+        }
+
+        // Return both shapes to avoid breaking either caller
+        return NextResponse.json({ data, incident: data }, { status: 200 });
+    } catch (err) {
+        console.error(err);
+        return NextResponse.json(ApiErrors.SERVER_ERROR, {
+            status: ApiErrors.SERVER_ERROR.code,
+        });
     }
-    // cannot close a closed incident, error
-    if (incident.status === "CLOSED") {
-        return NextResponse.json(
-            { error: "Incident is already closed" },
-            { status: 400 }
-        );
-    }
-    // if row with matching incident id successfully found, update status to CLOSED
-    // returns value to updatedIncident if done successfully
-    const {data: updatedIncident, error: updateError} = await supabase
-        .from("incidents")
-        .update({status: "CLOSED", closed_at: new Date().toISOString(),})
-        .eq("id", incidentId)
-        .select()
-        .single();
-
-    // error if updating status failed
-    if (updateError) {
-        return NextResponse.json(
-            { error: updateError.message },
-            { status: 500 }
-        );
-    }
-    // return the updated incident
-    return NextResponse.json(
-        { incident: updatedIncident },
-        { status: 200 }
-    );
 }
