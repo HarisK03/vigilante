@@ -92,3 +92,25 @@ export async function POST(
 		});
 	}
 }
+
+export async function GET(
+	req: NextRequest,
+	{ params }: { params: Promise<{ id: string }> },
+) {
+	try {
+		const supabase = await createSupabaseServerClient();
+		const {
+			data: { user },
+		} = await supabase.auth.getUser();
+
+		if (!user) {
+			return NextResponse.json({ canApprove: false }, { status: 200 });
+		}
+
+		const isAuthority = await checkAuthority(user.id);
+		return NextResponse.json({ canApprove: Boolean(isAuthority) }, { status: 200 });
+	} catch (err) {
+		console.error(err);
+		return NextResponse.json({ canApprove: false }, { status: 200 });
+	}
+}
