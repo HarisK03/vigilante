@@ -26,6 +26,6 @@ def user_can_edit_a_resource(tier3_login, supabase_client):
     assert response.status_code == 200, f"Unexpected response {response.json()}"
 
     result = supabase_client.table("resources").select("*").eq("name", name).execute()
-    assert not result.data, "Resource was not edited"
+    assert result.data, "Resource was not edited"
 
-    # feature not implemented yet
+    supabase_client.table("resources").delete().eq("name", name).execute()
