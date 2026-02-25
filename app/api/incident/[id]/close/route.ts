@@ -1,12 +1,8 @@
-// usage: POST /api/incident/[id]/close
-// body: { description?: string }
-// only tier 3 (Authority) can close incidents
-
 import { NextRequest, NextResponse } from "next/server";
-import { updateById, getById } from "@/lib/supabase/utils";
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
 import { ApiErrors } from "@/lib/api-errors";
 import { IncidentStatus, Tier } from "@/lib/types";
+import { getById, updateById } from "@/lib/supabase/utils";
 
 interface Incident {
     id: string;
@@ -31,12 +27,15 @@ async function checkAuthority(userId: string): Promise<boolean> {
     return profile?.tier === Tier.Authority;
 }
 
+// usage: POST /api/incident/[id]/close  (or your actual route path)
+// body: { description?: string }
+// only tier 3 (Authority) can close incidents
 export async function POST(
     req: NextRequest,
     { params }: { params: { id: string } }
 ) {
     try {
-        const { id } = params;
+        const incidentId = params.id;
 
         const body = await req.json().catch(() => ({}));
         const description = (body as any)?.description;
@@ -61,25 +60,24 @@ export async function POST(
             });
         }
 
-        // Verify incident exists
-        const existing = await getById<Incident>("incidents", id);
+        // Verify incident exists (keep master behavior)
+        const existing = await getById<Incident>("incidents", incidentId);
         if (!existing) {
             return NextResponse.json({ error: "Incident not found" }, { status: 404 });
         }
 
-        // Cannot close a closed incident
+        // Cannot close a closed incident (support both string "CLOSED" + enum)
         const existingStatusUpper = String((existing as any)?.status ?? "").toUpperCase();
-        const closedEnumUpper = String(IncidentStatus.Closed).toUpperCase();
+        const closedEnumUpper = String((IncidentStatus as any).Closed ?? "CLOSED").toUpperCase();
         if (existingStatusUpper === "CLOSED" || existingStatusUpper === closedEnumUpper) {
-            return NextResponse.json(
-                { error: "Incident is already closed" },
-                { status: 400 }
-            );
+            return NextResponse.json({ error: "Incident is already closed" }, { status: 400 });
         }
 
-        // Build update object
+        const nextStatus = (IncidentStatus as any).Closed ?? "CLOSED";
+
+        // Build update object (merged)
         const updates: Partial<Incident> = {
-            status: IncidentStatus.Closed,
+            status: nextStatus,
             closed_at: new Date().toISOString(),
         };
 
@@ -87,16 +85,17 @@ export async function POST(
             updates.description = typeof description === "string" ? description : null;
         }
 
-        const data = await updateById<Incident>("incidents", id, updates);
+        // Update incident (preferred helper)
+        const updated = await updateById<Incident>("incidents", incidentId, updates);
 
-        if (!data) {
+        if (!updated) {
             return NextResponse.json(ApiErrors.SERVER_ERROR, {
                 status: ApiErrors.SERVER_ERROR.code,
             });
         }
 
         // Return both shapes to avoid breaking either caller
-        return NextResponse.json({ data, incident: data }, { status: 200 });
+        return NextResponse.json({ data: updated, incident: updated }, { status: 200 });
     } catch (err) {
         console.error(err);
         return NextResponse.json(ApiErrors.SERVER_ERROR, {
