@@ -1,296 +1,280 @@
-// app/dashboard/citizen/page.tsx
 import Link from "next/link";
-import Sidebar from "@/util/sidebar";
-import { redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server-client";
+import Sidebar from "@/util/sidebar";
 
 type ReportRow = {
   id: string;
   description: string | null;
   type: string | null;
   status: string | null;
-  created_at: string;
+  created_at: string | null;
 };
 
 type IncidentRow = {
   id: string;
   title: string | null;
   status: string | null;
-  priority: string | null;
-  report_id: string | null;
-  created_at: string;
+  created_at: string | null;
 };
 
-function fmt(iso: string) {
-  const d = new Date(iso);
-  return new Intl.DateTimeFormat("en-CA", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(d);
+type RequestRow = {
+  id: string;
+};
+
+function TierBadge({ tier }: { tier: 1 | 2 | 3 }) {
+  const tierText = tier === 1 ? "Citizen" : tier === 2 ? "Volunteer" : "Authority";
+  return (
+    <span
+      className="rounded-full border border-white/10 px-3 py-1 text-xs font-medium"
+      style={{
+        color: tier === 1 ? "#34D399" : tier === 2 ? "#FF9F1A" : "#FFFFFF",
+        background: tier === 3 ? "#8B000D" : "rgba(255,255,255,0.06)",
+      }}
+    >
+      {tierText}
+    </span>
+  );
 }
 
-function Pill({
-  text,
-  kind,
+function PillButton({
+  children,
+  href,
+  variant = "ghost",
 }: {
-  text: string;
-  kind: "soft" | "red" | "green" | "orange";
+  children: React.ReactNode;
+  href?: string;
+  variant?: "ghost" | "red";
 }) {
-  const base =
-    "inline-flex items-center rounded-full border border-white/10 px-3 py-1 text-xs";
-  const map: Record<typeof kind, string> = {
-    soft: "bg-white/5 text-white/80",
-    red: "bg-[#8B000D] text-white",
-    green: "bg-white/5 text-[#34D399]",
-    orange: "bg-white/5 text-[#FF9F1A]",
-  };
-  return <span className={`${base} ${map[kind]}`}>{text}</span>;
+  const cls = [
+    "inline-flex items-center justify-center rounded-full border px-4 py-2 text-xs font-medium transition whitespace-nowrap",
+    variant === "red"
+      ? "border-transparent bg-[#8B000D] text-white hover:brightness-110"
+      : "border-white/10 bg-white/5 text-white hover:bg-white/10",
+  ].join(" ");
+  return href ? <Link href={href} className={cls}>{children}</Link> : <button type="button" className={cls}>{children}</button>;
 }
 
-function GhostBtn({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white hover:bg-white/10 transition"
-    >
-      {children}
-    </Link>
-  );
+function WideButton({
+  children,
+  href,
+  variant = "ghost",
+}: {
+  children: React.ReactNode;
+  href?: string;
+  variant?: "ghost" | "red";
+}) {
+  const cls = [
+    "flex w-full items-center justify-center rounded-xl border px-2 py-3 text-xs font-medium transition",
+    variant === "red"
+      ? "border-transparent bg-[#8B000D] text-white hover:brightness-110"
+      : "border-white/10 bg-white/[0.04] text-[#D9D9D9] hover:bg-white/10",
+  ].join(" ");
+  return href ? <Link href={href} className={cls}>{children}</Link> : <button type="button" className={cls}>{children}</button>;
 }
 
-function RedBtn({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center justify-center rounded-full border border-white/10 bg-[#8B000D] px-4 py-2 text-xs text-white hover:brightness-110 transition"
-    >
-      {children}
-    </Link>
-  );
-}
-
-function FeedItem({
+function CardHeader({
   title,
-  metaLeft,
-  metaRight,
+  subtitle,
   right,
 }: {
   title: string;
-  metaLeft: React.ReactNode;
-  metaRight: React.ReactNode;
-  right: React.ReactNode;
+  subtitle?: string;
+  right?: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-[#D9D9D9] truncate">
-            {title}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            {metaLeft}
-          </div>
-        </div>
-        <div className="shrink-0">{right}</div>
+    <div className="flex shrink-0 items-start justify-between gap-4 border-b border-white/10 px-6 py-4">
+      <div>
+        <p className="text-sm font-semibold text-[#D9D9D9]">{title}</p>
+        {subtitle && <p className="mt-0.5 text-xs text-[#D9D9D9]/45">{subtitle}</p>}
       </div>
-
-      <div className="mt-3 flex items-center justify-between text-xs text-[#D9D9D9]/60">
-        <div>{metaRight}</div>
-      </div>
+      {right && <div className="shrink-0">{right}</div>}
     </div>
   );
 }
 
-export default async function CitizenDashboard() {
-  const sidebarWidth = 84;
+function StatBox({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] py-4 text-center">
+      <span className="text-3xl font-extrabold text-[#D9D9D9]">{value}</span>
+      <span className="mt-1 text-xs text-[#D9D9D9]/45">{label}</span>
+    </div>
+  );
+}
 
+function ReportSquare({ title, type, date }: { title: string; type: string; date: string }) {
+  return (
+    <div className="flex flex-col justify-between rounded-xl border border-white/10 bg-white/[0.04] p-4">
+      <div>
+        <p className="text-[10px] font-medium uppercase tracking-widest text-[#D9D9D9]/40">{type}</p>
+        <p className="mt-1 text-sm font-semibold text-[#D9D9D9] leading-snug">{title}</p>
+      </div>
+      <p className="mt-3 text-xs text-[#D9D9D9]/40">{date}</p>
+    </div>
+  );
+}
+
+function formatDate(ts: string | null) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+export default async function CitizenDashboardPage() {
+  const SIDEBAR_W = 84;
   const supabase = await createSupabaseServerClient();
-  const { data: userRes } = await supabase.auth.getUser();
-  const user = userRes.user;
 
-  if (!user) redirect("/");
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) notFound();
 
-  const { data: profile, error: profErr } = await supabase
+  const { data: profile, error: profileErr } = await supabase
     .from("profiles")
-    .select("tier,username")
+    .select("username, tier")
     .eq("id", user.id)
     .maybeSingle();
 
-  if (profErr) throw new Error(profErr.message);
+  if (profileErr) throw new Error(profileErr.message);
 
-  const tier = (profile?.tier ?? 1) as 1 | 2 | 3;
-  if (tier === 3) redirect("/dashboard/authority");
+  const username = profile?.username ?? user.email?.split("@")[0] ?? "user";
+  const tier = ((profile?.tier ?? 1) as 1 | 2 | 3);
 
-  const username = (profile?.username ?? "user").toString();
+  const [
+    { data: reportsRaw, error: reportsErr },
+    { data: incidentsRaw, error: incidentsErr },
+    { data: requestsRaw, error: requestsErr },
+  ] = await Promise.all([
+    supabase
+      .from("reports")
+      .select("id,description,type,status,created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(2),
+    supabase
+      .from("incidents")
+      .select("id,title,status,created_at")
+      .eq("created_by", user.id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("requests")
+      .select("id")
+      .eq("requester_id", user.id),
+  ]);
 
-  const { data: reports, error: repErr } = await supabase
-    .from("reports")
-    .select("id,description,type,status,created_at")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(3)
-    .returns<ReportRow[]>();
+  if (reportsErr) throw new Error(reportsErr.message);
+  if (incidentsErr) throw new Error(incidentsErr.message);
+  if (requestsErr) throw new Error(requestsErr.message);
 
-  if (repErr) throw new Error(repErr.message);
+  const reports = (reportsRaw as ReportRow[]) ?? [];
+  const incidents = (incidentsRaw as IncidentRow[]) ?? [];
+  const requests = (requestsRaw as RequestRow[]) ?? [];
 
-  const { data: incidents, error: incErr } = await supabase
-    .from("incidents")
-    .select("id,title,status,priority,report_id,created_at")
-    .eq("created_by", user.id)
-    .order("created_at", { ascending: false })
-    .limit(3)
-    .returns<IncidentRow[]>();
-
-  if (incErr) throw new Error(incErr.message);
-
-  const activity = [
-    ...(reports ?? []).map((r) => ({
-      kind: "report" as const,
-      ts: r.created_at,
-      id: r.id,
-      title: r.type ? `Report: ${r.type}` : "Report",
-      status: r.status ?? "unknown",
-      desc: r.description ?? "",
-    })),
-    ...(incidents ?? []).map((i) => ({
-      kind: "incident" as const,
-      ts: i.created_at,
-      id: i.id,
-      title: i.title ? `Incident: ${i.title}` : "Incident",
-      status: i.status ?? "unknown",
-      priority: i.priority ?? "unspecified",
-      report_id: i.report_id,
-    })),
-  ].sort((a, b) => +new Date(b.ts) - +new Date(a.ts)).slice(0, 6);
+  const recentReports = reports.slice(0, 2).map((r) => ({
+    title: r.description ?? r.type ?? "Report",
+    type: r.type ?? "report",
+    date: formatDate(r.created_at),
+  }));
 
   return (
-    <main className="min-h-screen bg-[#0b0b0c] text-[#D9D9D9]">
+    <main className="relative h-screen overflow-hidden bg-[#0b0b0c] text-[#D9D9D9]">
       <Sidebar activeHref="/dashboard" />
 
       <div
-        className="px-6 py-8"
-        style={{ paddingLeft: `calc(${sidebarWidth}px + 24px)` }}
+        className="absolute bottom-0 right-0 top-0 flex flex-col gap-4 p-5"
+        style={{ left: SIDEBAR_W }}
       >
-        <div className="mx-auto max-w-6xl">
-          <section className="mb-4 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.35)] p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-2xl font-bold">My Activity</div>
-                <div className="mt-1 text-sm text-[#D9D9D9]/60">
-                  Recent actions for <span className="text-white">@{username}</span>
-                </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <Pill text="Citizen" kind="green" />
-                  <Pill text="Dashboard" kind="soft" />
-                </div>
-              </div>
 
-              <div className="flex items-center gap-2">
-                <RedBtn href="/report/new">Create report</RedBtn>
-                <GhostBtn href={`/profile/${username}`}>View profile</GhostBtn>
-              </div>
+        <header className="flex shrink-0 items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.04] px-7 py-5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+          <div>
+            <div className="mb-2">
+              <TierBadge tier={tier} />
             </div>
-          </section>
+            <h1 className="text-3xl font-extrabold text-[#D9D9D9]">My Activity</h1>
+            <p className="mt-1 text-sm text-[#D9D9D9]/45">@{username}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <PillButton href={`/profile/${username}`}>View Profile</PillButton>
+            <PillButton href="/report/new" variant="red">Create Report</PillButton>
+          </div>
+        </header>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.25fr_0.75fr]">
-            <section className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.35)] p-5">
-              <div className="flex items-baseline justify-between gap-3">
-                <h2 className="text-lg font-semibold tracking-wide">Activity feed</h2>
-                <span className="text-xs text-[#D9D9D9]/55">latest 6</span>
-              </div>
+        <div
+          className="grid min-h-0 flex-1 gap-4"
+          style={{ gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" }}
+        >
 
-              <div className="my-4 h-px bg-white/10" />
-
-              <div className="space-y-3">
-                {activity.length === 0 ? (
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-5 text-sm text-[#D9D9D9]/70">
-                    No activity yet. Create your first report to get started.
-                  </div>
-                ) : (
-                  activity.map((a) => (
-                    <FeedItem
-                      key={`${a.kind}-${a.id}`}
-                      title={a.title}
-                      metaLeft={
-                        a.kind === "report" ? (
-                          <>
-                            <Pill text="report" kind="soft" />
-                            <Pill text={a.status} kind="soft" />
-                          </>
-                        ) : (
-                          <>
-                            <Pill text="incident" kind="soft" />
-                            <Pill text={a.status} kind="soft" />
-                            <Pill text={a.priority} kind="orange" />
-                          </>
-                        )
-                      }
-                      metaRight={<span>{fmt(a.ts)}</span>}
-                      right={
-                        a.kind === "report" ? (
-                          <GhostBtn href={`/report/${a.id}`}>View</GhostBtn>
-                        ) : (
-                          <GhostBtn href={`/incident/${a.id}`}>View</GhostBtn>
-                        )
-                      }
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-
-            <div className="flex flex-col gap-4">
-              <section className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.35)] p-5">
-                <div className="flex items-baseline justify-between gap-3">
-                  <h2 className="text-lg font-semibold tracking-wide">Quick actions</h2>
-                  <span className="text-xs text-[#D9D9D9]/55">citizen</span>
-                </div>
-
-                <div className="my-4 h-px bg-white/10" />
-
-                <div className="grid grid-cols-1 gap-3">
-                  <RedBtn href="/report/new">Create a new report</RedBtn>
-                  <GhostBtn href="/reports-catalog">Browse reports</GhostBtn>
-                  <GhostBtn href="/incidents-catalog">Browse incidents</GhostBtn>
-                  <GhostBtn href="/resource-catalog">Browse resources</GhostBtn>
-                </div>
-              </section>
-
-              <section className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-[0_10px_30px_rgba(0,0,0,0.35)] p-5">
-                <div className="flex items-baseline justify-between gap-3">
-                  <h2 className="text-lg font-semibold tracking-wide">Counts</h2>
-                  <span className="text-xs text-[#D9D9D9]/55">top 3 each</span>
-                </div>
-
-                <div className="my-4 h-px bg-white/10" />
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center">
-                    <div className="text-2xl font-extrabold text-white">
-                      {(reports ?? []).length}
-                    </div>
-                    <div className="mt-1 text-xs text-[#D9D9D9]/60">Reports shown</div>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center">
-                    <div className="text-2xl font-extrabold text-white">
-                      {(incidents ?? []).length}
-                    </div>
-                    <div className="mt-1 text-xs text-[#D9D9D9]/60">Incidents shown</div>
-                  </div>
-                </div>
-              </section>
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+            <CardHeader
+              title="Quick Actions"
+              subtitle="Common things you'll do as a citizen."
+              right={<PillButton href="/dashboard/citizen/shortcuts">Shortcuts</PillButton>}
+            />
+            <div className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-6" style={{ gridAutoRows: "1fr" }}>
+              <WideButton href="/report/new" variant="red">Create report</WideButton>
+              <WideButton href="/incidents-catalog">Browse incidents</WideButton>
+              <WideButton href="/reports-catalog">Browse reports</WideButton>
+              <WideButton href="/resource-catalog">Browse resources</WideButton>
             </div>
           </div>
 
-          <div className="mt-4 flex justify-center">
-            <span className="text-xs text-[#D9D9D9]/45">
-              DispatchNow • dashboard (citizen)
-            </span>
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+            <CardHeader
+              title="Recent Reports"
+              subtitle="Your latest submissions."
+              right={<PillButton href="/reports-catalog">See all</PillButton>}
+            />
+            <div className="grid flex-1 grid-cols-2 gap-4 p-6">
+              {recentReports[0] ? (
+                <ReportSquare title={recentReports[0].title} type={recentReports[0].type} date={recentReports[0].date} />
+              ) : (
+                <Link href="/report/new" className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center hover:bg-white/[0.07] transition">
+                  <p className="text-sm font-semibold text-[#D9D9D9]">Create Report</p>
+                  <p className="mt-1 text-xs text-[#D9D9D9]/40">Submit your first report</p>
+                </Link>
+              )}
+              {recentReports[1] ? (
+                <ReportSquare title={recentReports[1].title} type={recentReports[1].type} date={recentReports[1].date} />
+              ) : recentReports[0] ? (
+                <Link href="/report/new" className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center hover:bg-white/[0.07] transition">
+                  <p className="text-sm font-semibold text-[#D9D9D9]">Create Report</p>
+                  <p className="mt-1 text-xs text-[#D9D9D9]/40">Submit another report</p>
+                </Link>
+              ) : (
+                <div className="rounded-xl border border-white/[0.06] bg-white/[0.02]" />
+              )}
+            </div>
           </div>
+
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+            <CardHeader title="Status" subtitle="Your recent activity summary." />
+            <div className="flex flex-1 gap-4 overflow-y-auto p-6">
+              <StatBox label="My reports" value={reports.length} />
+              <StatBox label="My incidents" value={incidents.length} />
+              <StatBox label="Requests" value={requests.length} />
+            </div>
+          </div>
+
+          <div className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+            <CardHeader
+              title="Nearby Incidents"
+              subtitle="Quick peek at what's active."
+              right={<PillButton href="/incidents-catalog">Open</PillButton>}
+            />
+            <div className="flex flex-1 flex-col overflow-y-auto p-6">
+              <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-white/10 bg-white/[0.03] p-6 text-center">
+                <p className="text-sm font-semibold text-[#D9D9D9]">None pinned</p>
+                <p className="mt-1.5 text-xs text-[#D9D9D9]/45">
+                  Browse the catalog to view details.
+                </p>
+              </div>
+            </div>
+          </div>
+
         </div>
+
+        <p className="shrink-0 text-center text-[11px] text-[#D9D9D9]/25">
+          DispatchNow • citizen dashboard
+        </p>
+
       </div>
     </main>
   );
