@@ -2,44 +2,31 @@
 
 import { Suspense } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import MenuBackground from "../../../components/menu/MenuBackground";
-import RainLayer from "../../../components/menu/RainLayer";
+
+const StreetMapScene = dynamic(() => import("../../../components/game/StreetMapScene"), { ssr: false });
 
 function SingleplayerPlayInner() {
 	const params = useSearchParams();
 	const scope = params.get("scope") ?? "local";
 	const slot = params.get("slot") ?? "?";
+	const saveKey = `vigilante:singleplayer:${scope}:${slot}:streetmap`;
 
 	return (
-		<div className="fixed inset-0 min-h-screen overflow-auto">
-			<MenuBackground />
-			<RainLayer />
+		<div className="fixed inset-0">
+			<StreetMapScene saveKey={saveKey} />
 
-			<header className="relative z-10 flex items-center justify-between px-6 py-4">
+			<header className="absolute inset-x-0 top-0 z-1100 flex items-center justify-start px-6 py-4 pointer-events-none">
 				<Link
 					href="/"
-					className="text-base font-semibold text-amber-200/80 hover:text-amber-100 transition-colors cursor-pointer"
+					className="pointer-events-auto text-base font-semibold text-amber-200/80 hover:text-amber-100 transition-colors cursor-pointer"
 					style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
+					aria-label="Back to main menu"
 				>
 					Vigilante
 				</Link>
-				<span className="text-sm text-amber-200/60">
-					Singleplayer • {scope} slot {slot}
-				</span>
 			</header>
-
-			<main className="relative z-10 mx-auto w-full max-w-3xl px-6 pb-24 pt-10">
-				<h1
-					className="text-3xl font-bold text-amber-100"
-					style={{ fontFamily: "Georgia, 'Times New Roman', serif" }}
-				>
-					Singleplayer (placeholder)
-				</h1>
-				<p className="mt-2 text-amber-200/60">
-					This is where the actual game scene loads from the selected save slot.
-				</p>
-			</main>
 		</div>
 	);
 }
