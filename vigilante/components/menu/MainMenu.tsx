@@ -75,7 +75,10 @@ export default function MainMenu() {
 							className={`relative flex items-center justify-between w-full px-6 rounded-xl border text-lg font-semibold transition-all duration-200 ${MAIN_BUTTON_HEIGHT} ${ACTIVE_BUTTON}`}
 						>
 							<span className="flex items-center gap-3">
-								<User className="w-5 h-5 text-amber-200/70" aria-hidden />
+								<User
+									className="w-5 h-5 text-amber-200/70"
+									aria-hidden
+								/>
 								<span>Singleplayer</span>
 							</span>
 						</button>
@@ -88,7 +91,9 @@ export default function MainMenu() {
 							}`}
 						>
 							<span className="flex items-center gap-3">
-								{!isSignedIn && <Lock className="w-5 h-5" aria-hidden />}
+								{!isSignedIn && (
+									<Lock className="w-5 h-5" aria-hidden />
+								)}
 								<Users
 									className={`w-5 h-5 ${isSignedIn ? "text-amber-200/70" : "text-amber-300/60"}`}
 									aria-hidden
@@ -103,7 +108,10 @@ export default function MainMenu() {
 									href="/profile"
 									className={`flex-1 flex items-center gap-3 px-6 rounded-xl border text-lg font-semibold transition-all duration-200 ${MAIN_BUTTON_HEIGHT} ${ACTIVE_BUTTON}`}
 								>
-									<UserRound className="w-5 h-5 text-amber-200/70" aria-hidden />
+									<UserRound
+										className="w-5 h-5 text-amber-200/70"
+										aria-hidden
+									/>
 									<span>Profile</span>
 								</Link>
 								<button
