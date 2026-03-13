@@ -25,6 +25,15 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Hide scrollbars for noir panels while keeping scroll functionality. */
+.vigilante-hide-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+.vigilante-hide-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+
 /* Leaflet map container background: deep charcoal so gaps between tiles
    feel like part of the noir map without a blue cast. */
 .vigilante-leaflet.leaflet-container {

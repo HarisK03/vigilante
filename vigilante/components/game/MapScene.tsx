@@ -45,7 +45,7 @@ function mapToScreen(
 	p: { x: number; y: number },
 	w: number,
 	h: number,
-	vp: Viewport
+	vp: Viewport,
 ): { x: number; y: number } {
 	// zoom around center; zoom < 1 => show more area
 	const cx = 0.5;
@@ -59,7 +59,7 @@ function screenToMap(
 	p: { x: number; y: number },
 	w: number,
 	h: number,
-	vp: Viewport
+	vp: Viewport,
 ): { x: number; y: number } {
 	const cx = 0.5;
 	const cy = 0.5;
@@ -88,7 +88,8 @@ function initialState(): GameState {
 				x: BASE.x,
 				y: BASE.y,
 				title: "Home Base",
-				details: "A familiar voice offers new hires. Click to run a background check.",
+				details:
+					"A familiar voice offers new hires. Click to run a background check.",
 				createdAt: now,
 			},
 		],
@@ -102,8 +103,12 @@ function loadState(saveKey: string): GameState {
 		const parsed = JSON.parse(raw) as Partial<GameState>;
 		if (!Array.isArray(parsed.markers)) return initialState();
 		return {
-			zoomUnlock: typeof parsed.zoomUnlock === "number" ? parsed.zoomUnlock : 0,
-			selectedId: typeof parsed.selectedId === "string" ? parsed.selectedId : null,
+			zoomUnlock:
+				typeof parsed.zoomUnlock === "number" ? parsed.zoomUnlock : 0,
+			selectedId:
+				typeof parsed.selectedId === "string"
+					? parsed.selectedId
+					: null,
 			markers: parsed.markers as MapMarker[],
 		};
 	} catch {
@@ -147,7 +152,10 @@ export default function MapScene({ saveKey }: Props) {
 		const ro = new ResizeObserver((entries) => {
 			const cr = entries[0]?.contentRect;
 			if (!cr) return;
-			setSize({ w: Math.max(320, Math.floor(cr.width)), h: Math.max(320, Math.floor(cr.height)) });
+			setSize({
+				w: Math.max(320, Math.floor(cr.width)),
+				h: Math.max(320, Math.floor(cr.height)),
+			});
 		});
 		ro.observe(el);
 		return () => ro.disconnect();
@@ -159,14 +167,20 @@ export default function MapScene({ saveKey }: Props) {
 			setState((s) => {
 				const now = Date.now();
 				// remove expired markers (never remove hire marker)
-				const filtered = s.markers.filter((m) => m.kind === "hire" || !m.expiresAt || m.expiresAt > now);
+				const filtered = s.markers.filter(
+					(m) =>
+						m.kind === "hire" || !m.expiresAt || m.expiresAt > now,
+				);
 
 				let next = { ...s, markers: filtered };
 
-				const activeCount = filtered.filter((m) => m.kind !== "hire").length;
+				const activeCount = filtered.filter(
+					(m) => m.kind !== "hire",
+				).length;
 				const spawnChance = activeCount < 5 ? 0.55 : 0.25;
 				if (Math.random() < spawnChance) {
-					const kind: MarkerKind = Math.random() < 0.72 ? "incident" : "theft";
+					const kind: MarkerKind =
+						Math.random() < 0.72 ? "incident" : "theft";
 					// spawn farther away as zoom unlock increases
 					const radius = 0.08 + next.zoomUnlock * 0.32;
 					let x = clamp01(BASE.x + rnd(-radius, radius));
@@ -183,7 +197,10 @@ export default function MapScene({ saveKey }: Props) {
 						kind,
 						x,
 						y,
-						title: kind === "incident" ? "Incoming Call" : "Theft Opportunity",
+						title:
+							kind === "incident"
+								? "Incoming Call"
+								: "Theft Opportunity",
 						details:
 							kind === "incident"
 								? "A report just came in. Send the right crew before it escalates."
@@ -195,7 +212,10 @@ export default function MapScene({ saveKey }: Props) {
 				}
 
 				// If selected marker expired, clear selection
-				if (next.selectedId && !next.markers.some((m) => m.id === next.selectedId)) {
+				if (
+					next.selectedId &&
+					!next.markers.some((m) => m.id === next.selectedId)
+				) {
 					next = { ...next, selectedId: null };
 				}
 
@@ -244,7 +264,14 @@ export default function MapScene({ saveKey }: Props) {
 			const r = (0.35 + t * 0.35) * Math.min(w, h);
 			const base = mapToScreen(BASE, w, h, viewport);
 
-			const g = ctx.createRadialGradient(base.x, base.y, r * 0.4, base.x, base.y, r);
+			const g = ctx.createRadialGradient(
+				base.x,
+				base.y,
+				r * 0.4,
+				base.x,
+				base.y,
+				r,
+			);
 			g.addColorStop(0, `rgba(0,0,0,0)`);
 			g.addColorStop(0.65, `rgba(0,0,0,${strength})`);
 			g.addColorStop(1, `rgba(0,0,0,0.92)`);
@@ -276,7 +303,8 @@ export default function MapScene({ saveKey }: Props) {
 			// draw line from base to selected marker (or nearest active marker if none selected)
 			const base = mapToScreen(BASE, w, h, viewport);
 			const selected =
-				(state.selectedId && state.markers.find((m) => m.id === state.selectedId)) ||
+				(state.selectedId &&
+					state.markers.find((m) => m.id === state.selectedId)) ||
 				state.markers.find((m) => m.kind === "incident") ||
 				state.markers.find((m) => m.kind === "theft") ||
 				null;
@@ -337,14 +365,25 @@ export default function MapScene({ saveKey }: Props) {
 
 		raf = requestAnimationFrame(draw);
 		return () => cancelAnimationFrame(raf);
-	}, [size.w, size.h, state.markers, state.selectedId, state.zoomUnlock, viewport]);
+	}, [
+		size.w,
+		size.h,
+		state.markers,
+		state.selectedId,
+		state.zoomUnlock,
+		viewport,
+	]);
 
 	const selectedMarker = useMemo(() => {
-		return state.selectedId ? state.markers.find((m) => m.id === state.selectedId) ?? null : null;
+		return state.selectedId
+			? (state.markers.find((m) => m.id === state.selectedId) ?? null)
+			: null;
 	}, [state.markers, state.selectedId]);
 
 	const onClickCanvas = (e: React.MouseEvent) => {
-		const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+		const rect = (
+			e.currentTarget as HTMLCanvasElement
+		).getBoundingClientRect();
 		const x = e.clientX - rect.left;
 		const y = e.clientY - rect.top;
 
@@ -376,12 +415,17 @@ export default function MapScene({ saveKey }: Props) {
 		}
 
 		setState((s) => {
-			const remaining = s.markers.filter((m) => m.id !== selectedMarker.id);
+			const remaining = s.markers.filter(
+				(m) => m.id !== selectedMarker.id,
+			);
 			return {
 				...s,
 				markers: remaining,
 				selectedId: null,
-				zoomUnlock: clamp01(s.zoomUnlock + (selectedMarker.kind === "incident" ? 0.08 : 0.06)),
+				zoomUnlock: clamp01(
+					s.zoomUnlock +
+						(selectedMarker.kind === "incident" ? 0.08 : 0.06),
+				),
 			};
 		});
 	};
@@ -399,13 +443,16 @@ export default function MapScene({ saveKey }: Props) {
 
 			<div className="absolute left-4 top-4 z-10">
 				<div className="rounded-xl border border-amber-900/40 bg-black/35 backdrop-blur-md px-4 py-3 text-amber-200/70 w-[320px] max-w-[80vw]">
-					<div className="text-[11px] uppercase tracking-[0.22em] text-amber-400/70">Map</div>
+					<div className="text-[11px] uppercase tracking-[0.22em] text-amber-400/70">
+						Map
+					</div>
 					<div className="mt-1 text-sm">
 						<span className="text-amber-200/80">Zoom unlock:</span>{" "}
 						{Math.round(state.zoomUnlock * 100)}%
 					</div>
 					<div className="mt-1 text-xs text-amber-200/50">
-						Markers appear over time. Click a marker to view details.
+						Markers appear over time. Click a marker to view
+						details.
 					</div>
 				</div>
 			</div>
@@ -420,11 +467,21 @@ export default function MapScene({ saveKey }: Props) {
 							<div className="mt-1 text-base font-semibold text-amber-100">
 								{selectedMarker.title}
 							</div>
-							<p className="mt-2 text-sm text-amber-200/60">{selectedMarker.details}</p>
+							<p className="mt-2 text-sm text-amber-200/60">
+								{selectedMarker.details}
+							</p>
 							{selectedMarker.expiresAt && (
 								<p className="mt-2 text-xs text-amber-200/40">
 									Expires in{" "}
-									{Math.max(0, Math.ceil((selectedMarker.expiresAt - Date.now()) / 1000))}s
+									{Math.max(
+										0,
+										Math.ceil(
+											(selectedMarker.expiresAt -
+												Date.now()) /
+												1000,
+										),
+									)}
+									s
 								</p>
 							)}
 							<div className="mt-3 flex gap-2">
@@ -433,11 +490,18 @@ export default function MapScene({ saveKey }: Props) {
 									onClick={resolveSelected}
 									className="flex-1 py-2.5 rounded-lg border border-amber-700/50 bg-amber-950/20 text-amber-200 font-medium hover:bg-amber-900/30 transition-colors cursor-pointer"
 								>
-									{selectedMarker.kind === "hire" ? "Start Hire Check" : "Resolve"}
+									{selectedMarker.kind === "hire"
+										? "Start Hire Check"
+										: "Resolve"}
 								</button>
 								<button
 									type="button"
-									onClick={() => setState((s) => ({ ...s, selectedId: null }))}
+									onClick={() =>
+										setState((s) => ({
+											...s,
+											selectedId: null,
+										}))
+									}
 									className="px-3 py-2.5 rounded-lg border border-amber-900/40 bg-black/30 text-amber-200/70 hover:bg-amber-950/20 transition-colors cursor-pointer"
 								>
 									Close
@@ -456,21 +520,27 @@ export default function MapScene({ saveKey }: Props) {
 								<div className="flex items-center gap-2">
 									<span
 										className="inline-block w-2.5 h-2.5 rounded-full"
-										style={{ background: kindColor("incident") }}
+										style={{
+											background: kindColor("incident"),
+										}}
 									/>
 									Incidents
 								</div>
 								<div className="flex items-center gap-2">
 									<span
 										className="inline-block w-2.5 h-2.5 rounded-full"
-										style={{ background: kindColor("theft") }}
+										style={{
+											background: kindColor("theft"),
+										}}
 									/>
 									Theft
 								</div>
 								<div className="flex items-center gap-2">
 									<span
 										className="inline-block w-2.5 h-2.5 rounded-full"
-										style={{ background: kindColor("hire") }}
+										style={{
+											background: kindColor("hire"),
+										}}
 									/>
 									Base
 								</div>
@@ -482,4 +552,3 @@ export default function MapScene({ saveKey }: Props) {
 		</div>
 	);
 }
-
