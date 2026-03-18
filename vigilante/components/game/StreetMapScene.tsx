@@ -1,8 +1,9 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Package2 } from "lucide-react";
+import InventorySorterModal from "../minigames/InventorySorterModal";
 import type { LatLngBounds, LatLngTuple } from "leaflet";
 import {
 	MapContainer,
@@ -72,6 +73,7 @@ type GameState = {
 	selectedIncidentId: string | null;
 	incidents: Incident[];
 	showIncidentPanel: boolean;
+	showMinigamePanel: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -87,6 +89,24 @@ const LEVELS = [
 	{ id: 1, label: "L1", zoomOut: 15, zoomIn: 15 },
 	{ id: 2, label: "L2", zoomOut: 14, zoomIn: 14 },
 	{ id: 3, label: "L3", zoomOut: 13, zoomIn: 13 },
+];
+
+type MinigameId = "inventory-sorter";
+
+type MinigameOption = {
+	id: MinigameId;
+	title: string;
+	description: string;
+	status?: string;
+};
+
+const MINIGAME_OPTIONS: MinigameOption[] = [
+	{
+		id: "inventory-sorter",
+		title: "Inventory Sorter",
+		description: "Reorganize emergency supplies to earn extra resources.",
+		status: "Available",
+	},
 ];
 
 // ---------------------------------------------------------------------------
@@ -349,6 +369,7 @@ function initialState(): GameState {
 		selectedIncidentId: null,
 		incidents: [],
 		showIncidentPanel: true,
+		showMinigamePanel: false,
 	};
 }
 
@@ -373,6 +394,10 @@ function loadState(saveKey: string): GameState {
 				typeof p.showIncidentPanel === "boolean"
 					? p.showIncidentPanel
 					: true,
+			showMinigamePanel:
+				typeof p.showMinigamePanel === "boolean"
+					? p.showMinigamePanel
+					: false,
 		};
 	} catch {
 		return initialState();
@@ -389,6 +414,7 @@ function saveState(saveKey: string, state: GameState) {
 
 export default function StreetMapScene({ saveKey }: Props) {
 	const [state, setState] = useState<GameState>(() => initialState());
+	const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
 
 	useEffect(() => {
 		setState(loadState(saveKey));
@@ -448,6 +474,8 @@ export default function StreetMapScene({ saveKey }: Props) {
 	// Spawn incidents at a steady rate, always using the real bounds for the
 	// current level so they spread evenly across the full visible rectangle.
 	useEffect(() => {
+		if (inventorySorterOpen) return;
+
 		let alive = true;
 		const MAX_ACTIVE = 20;
 		const SPAWN_INTERVAL_MS = 20_000;
@@ -487,11 +515,13 @@ export default function StreetMapScene({ saveKey }: Props) {
 		return () => {
 			alive = false;
 		};
-	}, []);
+	}, [inventorySorterOpen]);
 
 	// 1-second backup expiry — catches incidents that slipped through
 	// (e.g. tab was hidden so onAnimationEnd never fired).
 	useEffect(() => {
+		if (inventorySorterOpen) return;
+
 		const id = window.setInterval(() => {
 			setState((s) => {
 				const now = Date.now();
@@ -515,7 +545,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 			});
 		}, 1_000);
 		return () => window.clearInterval(id);
-	}, []);
+	}, [inventorySorterOpen]);
 
 	const zoomConfig = useMemo(() => {
 		const minZoom = LEVELS[LEVELS.length - 1].zoomOut;
@@ -619,11 +649,10 @@ export default function StreetMapScene({ saveKey }: Props) {
 								onClick={() =>
 									setState((s) => ({ ...s, level: lvl.id }))
 								}
-								className={`px-3 py-1 rounded-md border cursor-pointer ${
-									state.level === lvl.id
+								className={`px-3 py-1 rounded-md border cursor-pointer ${state.level === lvl.id
 										? "border-amber-500/70 bg-amber-900/40 text-amber-100"
 										: "border-amber-900/50 bg-black/30 text-amber-200/60 hover:border-amber-700/60 hover:text-amber-100"
-								}`}
+									}`}
 							>
 								{lvl.label}
 							</button>
@@ -657,7 +686,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 					</button>
 				</div>
 
-				{/* Panel with framer-motion slide */}
 				<AnimatePresence initial={false}>
 					{state.showIncidentPanel && (
 						<motion.div
@@ -683,11 +711,8 @@ export default function StreetMapScene({ saveKey }: Props) {
 								{state.incidents
 									.filter((i) => i.status === "active")
 									.sort((a, b) => {
-										// Selected incident always appears first, others by expiry.
-										if (a.id === state.selectedIncidentId)
-											return -1;
-										if (b.id === state.selectedIncidentId)
-											return 1;
+										if (a.id === state.selectedIncidentId) return -1;
+										if (b.id === state.selectedIncidentId) return 1;
 										return a.expiresAt - b.expiresAt;
 									})
 									.map((inc) => {
@@ -700,11 +725,10 @@ export default function StreetMapScene({ saveKey }: Props) {
 												onClick={() =>
 													handleIncidentSelect(inc.id)
 												}
-												className={`w-full text-left rounded-lg border px-3 py-2 text-xs transition-colors cursor-pointer ${
-													isSelected
+												className={`w-full text-left rounded-lg border px-3 py-2 text-xs transition-colors cursor-pointer ${isSelected
 														? "border-amber-500/80 bg-amber-900/50 text-amber-100"
 														: "border-amber-900/50 bg-black/40 text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100"
-												}`}
+													}`}
 											>
 												<div className="flex items-start gap-3">
 													<div className="mt-0.5 h-5 w-5 rounded-full border border-red-900 bg-red-900/30 flex items-center justify-center text-[11px] text-red-300">
@@ -720,16 +744,10 @@ export default function StreetMapScene({ saveKey }: Props) {
 															{inc.summary}
 														</div>
 														<TimerBar
-															createdAt={
-																inc.createdAt
-															}
-															expiresAt={
-																inc.expiresAt
-															}
+															createdAt={inc.createdAt}
+															expiresAt={inc.expiresAt}
 															onExpire={() =>
-																expireIncident(
-																	inc.id,
-																)
+																expireIncident(inc.id)
 															}
 														/>
 													</div>
@@ -741,28 +759,121 @@ export default function StreetMapScene({ saveKey }: Props) {
 								{state.incidents.filter(
 									(i) => i.status === "active",
 								).length === 0 && (
-									<div className="text-[11px] text-amber-200/40 px-1 py-2">
-										No active incidents. The city is quiet…
-										for now.
-									</div>
-								)}
+										<div className="text-[11px] text-amber-200/40 px-1 py-2">
+											No active incidents. The city is quiet... for now.
+										</div>
+									)}
 
-								{/* Bottom fade to imply more content when list is scrollable */}
 								<div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-black/70 to-transparent" />
 							</div>
 
-							{/* Hint when many incidents exist */}
 							{state.incidents.filter(
 								(i) => i.status === "active",
 							).length > 3 && (
-								<div className="px-3 pt-2 pb-3 text-[10px] text-amber-200/50">
-									More incidents below – scroll to view.
-								</div>
-							)}
+									<div className="px-3 pt-2 pb-3 text-[10px] text-amber-200/50">
+										More incidents below - scroll to view.
+									</div>
+								)}
 						</motion.div>
 					)}
 				</AnimatePresence>
 			</div>
+
+			{/* ── Left minigame panel + toggle ── */}
+			<div className="fixed left-0 flex items-start" style={{ top: 160, zIndex: 2000 }}>
+				<div className="pointer-events-auto">
+					<button
+						type="button"
+						onClick={() =>
+							setState((s) => ({
+								...s,
+								showMinigamePanel: !s.showMinigamePanel,
+							}))
+						}
+						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
+					>
+						<span>Minigames</span>
+						<span className="text-[11px] flex items-center">
+							{state.showMinigamePanel ? (
+								<ChevronLeft className="w-3 h-3" aria-hidden />
+							) : (
+								<ChevronRight className="w-3 h-3" aria-hidden />
+							)}
+						</span>
+					</button>
+				</div>
+
+				<AnimatePresence initial={false}>
+					{state.showMinigamePanel && (
+						<motion.div
+							key="minigame-panel"
+							initial={{ x: -320, opacity: 0 }}
+							animate={{ x: 0, opacity: 1 }}
+							exit={{ x: -320, opacity: 0 }}
+							transition={{
+								type: "tween",
+								duration: 0.22,
+								ease: "easeOut",
+							}}
+							className="pointer-events-auto ml-2 w-80 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
+						>
+							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
+								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
+									Minigames
+								</div>
+							</div>
+
+							<div className="px-3 py-2 space-y-2">
+								{MINIGAME_OPTIONS.map((game) => (
+									<button
+										key={game.id}
+										type="button"
+										onClick={() => {
+											if (game.id === "inventory-sorter") {
+												setInventorySorterOpen(true);
+											}
+										}}
+										className="w-full text-left rounded-lg border border-amber-900/50 bg-black/40 px-3 py-3 text-xs text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100 transition-colors cursor-pointer"
+									>
+										<div className="flex items-start gap-3">
+											<div className="mt-0.5 h-8 w-8 rounded-lg border border-amber-800/60 bg-amber-950/30 flex items-center justify-center text-amber-300">
+												<Package2 className="w-4 h-4" aria-hidden />
+											</div>
+											<div className="flex-1">
+												<div className="flex items-center justify-between gap-2">
+													<div className="font-semibold text-[11px] uppercase tracking-[0.16em]">
+														{game.title}
+													</div>
+													{game.status && (
+														<div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/60">
+															{game.status}
+														</div>
+													)}
+												</div>
+												<div className="mt-1 text-[11px] text-amber-200/60 line-clamp-2">
+													{game.description}
+												</div>
+											</div>
+										</div>
+									</button>
+								))}
+
+								<div className="rounded-lg border border-dashed border-amber-900/40 bg-black/20 px-3 py-3 text-[11px] text-amber-200/35">
+									More minigames can be added here later.
+								</div>
+							</div>
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</div>
+			<InventorySorterModal
+				open={inventorySorterOpen}
+				onClose={() => setInventorySorterOpen(false)}
+				onWin={(reward) => {
+					console.log("Inventory Sorter reward:", reward);
+					setInventorySorterOpen(false);
+				}}
+			/>
 		</div>
 	);
 }
