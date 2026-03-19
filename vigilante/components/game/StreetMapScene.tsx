@@ -7,12 +7,11 @@ import type { LatLngBounds, LatLngTuple } from "leaflet";
 import {
 	MapContainer,
 	Marker,
-	Polyline,
 	TileLayer,
 	useMap,
-	useMapEvents,
 } from "react-leaflet";
 import * as L from "leaflet";
+import InventoryDock from "./InventoryDock";
 
 // ---------------------------------------------------------------------------
 // Tile buffer patch — bumps keepBuffer and kills fade-in flash
@@ -290,6 +289,22 @@ function IncidentMarkers({
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 }) {
+	// Cache icons so existing markers don't get their DOM replaced on every
+	// state tick/spawn (which would restart CSS animations and look choppy).
+	const iconCacheRef = useRef<
+		Map<string, { selected: boolean; icon: L.DivIcon }>
+	>(new Map());
+
+	// Prune cache entries for incidents that no longer exist.
+	useEffect(() => {
+		const activeIds = new Set(
+			incidents.filter((i) => i.status === "active").map((i) => i.id),
+		);
+		for (const key of iconCacheRef.current.keys()) {
+			if (!activeIds.has(key)) iconCacheRef.current.delete(key);
+		}
+	}, [incidents]);
+
 	return (
 		<>
 			{incidents
@@ -298,11 +313,16 @@ function IncidentMarkers({
 					<Marker
 						key={inc.id}
 						position={[inc.lat, inc.lng]}
-						icon={makeIncidentIcon(
-							inc.category,
-							inc.id === selectedId,
-							false,
-						)}
+						icon={(() => {
+							const isSelected = inc.id === selectedId;
+							const cached = iconCacheRef.current.get(inc.id);
+							if (cached && cached.selected === isSelected) {
+								return cached.icon;
+							}
+							const icon = makeIncidentIcon(inc.category, isSelected, false);
+							iconCacheRef.current.set(inc.id, { selected: isSelected, icon });
+							return icon;
+						})()}
 						eventHandlers={{ click: () => onSelect(inc.id) }}
 					/>
 				))}
@@ -606,7 +626,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 			</MapContainer>
 
 			{/* ── Top bar ── */}
-			<div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] flex justify-center pt-4">
+			<div className="pointer-events-none absolute inset-x-0 top-0 z-1000 flex justify-center pt-4">
 				<div className="pointer-events-auto inline-flex items-center gap-3 rounded-xl border border-amber-900/40 bg-black/40 backdrop-blur-md px-4 py-3 text-amber-200/70">
 					<div className="text-[11px] uppercase tracking-[0.22em] text-amber-400/70">
 						Zoom Tier
@@ -633,7 +653,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 			</div>
 
 			{/* ── Left incident panel + toggle ── */}
-			<div className="pointer-events-none absolute inset-y-16 left-0 z-[950] flex items-start">
+			<div className="pointer-events-none absolute inset-y-16 left-0 z-950 flex items-start">
 				{/* Edge toggle button (always visible) */}
 				<div className="pointer-events-auto mt-4">
 					<button
@@ -763,6 +783,9 @@ export default function StreetMapScene({ saveKey }: Props) {
 					)}
 				</AnimatePresence>
 			</div>
+
+			{/* ── Bottom inventory dock ── */}
+			<InventoryDock />
 		</div>
 	);
 }
