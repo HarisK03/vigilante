@@ -9,9 +9,6 @@ import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
 import { vigilantes } from "@/app/components/data/vigilante";
 
-// ---------------------------------------------------------------------------
-// Tile buffer patch
-// ---------------------------------------------------------------------------
 if (typeof window !== "undefined") {
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
 	const Lf = require("leaflet");
@@ -35,10 +32,6 @@ if (typeof window !== "undefined") {
 		proto._edgeBufferPatched = true;
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 type Props = {
 	saveKey: string;
@@ -90,10 +83,6 @@ type GameState = {
 	recruitLeads: RecruitLead[];
 };
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const CENTER: LatLngTuple = [40.7128, -74.006];
 const BASE: LatLngTuple = [40.7139, -74.0038];
 const HOMEBASE_POS: LatLngTuple = [40.7139, -74.0038];
@@ -105,13 +94,13 @@ const LEVELS = [
 ];
 
 const CHARACTER_PINS: CharacterPin[] = [
-	{ id: "cit-oldman", name: "Old Man", initial: "O", kind: "citizen", lat: 40.7130, lng: -74.0112 },
+	{ id: "cit-oldman", name: "Old Man", initial: "O", kind: "citizen", lat: 40.713, lng: -74.0112 },
 	{ id: "cit-girl", name: "Girl", initial: "G", kind: "citizen", lat: 40.7178, lng: -74.0014 },
 	{ id: "cit-woman", name: "Woman", initial: "W", kind: "citizen", lat: 40.7102, lng: -74.0005 },
 	{ id: "cit-helper", name: "Helper", initial: "H", kind: "citizen", lat: 40.7185, lng: -74.0072 },
 
 	{ id: "cop-diaz", name: "Officer Diaz", initial: "D", kind: "police", lat: 40.7129, lng: -73.9998 },
-	{ id: "cop-kim", name: "Detective Kim", initial: "K", kind: "police", lat: 40.7166, lng: -74.0100 },
+	{ id: "cop-kim", name: "Detective Kim", initial: "K", kind: "police", lat: 40.7166, lng: -74.01 },
 	{ id: "chief-williams", name: "Chief Williams", initial: "C", kind: "police", lat: 40.7095, lng: -74.0069 },
 ];
 
@@ -200,10 +189,6 @@ const NPC_DIALOGUE = {
 		],
 	},
 };
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function incidentCategoryLabel(cat: IncidentCategory) {
 	if (cat === "fire") return "Fire";
@@ -404,10 +389,6 @@ function makeHomebaseIcon() {
 	});
 }
 
-// ---------------------------------------------------------------------------
-// ZoomController
-// ---------------------------------------------------------------------------
-
 function ZoomController({
 	level,
 	onBoundsReady,
@@ -441,10 +422,6 @@ function ZoomController({
 
 	return null;
 }
-
-// ---------------------------------------------------------------------------
-// Incident sub-components
-// ---------------------------------------------------------------------------
 
 const TimerBar = React.memo(function TimerBar({
 	createdAt,
@@ -592,10 +569,6 @@ function SelectedIncidentFollower({
 	return null;
 }
 
-// ---------------------------------------------------------------------------
-// State persistence
-// ---------------------------------------------------------------------------
-
 function initialState(): GameState {
 	return {
 		level: 1,
@@ -642,10 +615,6 @@ function saveState(saveKey: string, state: GameState) {
 	localStorage.setItem(saveKey, JSON.stringify(state));
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
 export default function StreetMapScene({ saveKey }: Props) {
 	const [state, setState] = useState<GameState>(() => initialState());
 
@@ -677,16 +646,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 				s.selectedIncidentId === id ? null : s.selectedIncidentId,
 			incidents: s.incidents.filter((i) => i.id !== id),
 		}));
-	};
-
-	const expireRecruitLead = (id: string) => {
-		setState((s) => ({
-			...s,
-			recruitLeads: s.recruitLeads.filter((r) => r.id !== id),
-		}));
-		if (selectedRecruitLeadId === id) {
-			setSelectedRecruitLeadId(null);
-		}
 	};
 
 	const handleIncidentSelect = (id: string) => {
@@ -745,12 +704,12 @@ export default function StreetMapScene({ saveKey }: Props) {
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
 		setShowHomebasePanel(false);
-	
+
 		if (pin.kind === "citizen") {
 			const citizen =
 				NPC_DIALOGUE.citizens.find((c) => c.name === pin.name) ??
 				NPC_DIALOGUE.citizens[0];
-	
+
 			setDialogue({
 				name: citizen.name,
 				role: citizen.role,
@@ -759,7 +718,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 			});
 			return;
 		}
-	
+
 		if (pin.name === "Chief Williams") {
 			setDialogue({
 				name: NPC_DIALOGUE.chief.name,
@@ -769,11 +728,11 @@ export default function StreetMapScene({ saveKey }: Props) {
 			});
 			return;
 		}
-	
+
 		const officer =
 			NPC_DIALOGUE.police.find((p) => p.name === pin.name) ??
 			NPC_DIALOGUE.police[0];
-	
+
 		setDialogue({
 			name: officer.name,
 			role: officer.role,
@@ -876,7 +835,31 @@ export default function StreetMapScene({ saveKey }: Props) {
 					const available = vigilantes.filter((v) => !unavailable.has(v.id));
 					if (available.length === 0) return s;
 
-					const chosen = randomFrom(available);
+					const undercoverAvailable = available.filter((v) => v.isUndercover);
+					const normalAvailable = available.filter((v) => !v.isUndercover);
+
+					const undercoverAlreadyOnMap = s.recruitLeads.some((lead) => {
+						const match = vigilantes.find((v) => v.id === lead.vigilanteId);
+						return match?.isUndercover;
+					});
+
+					let chosen;
+
+					if (!undercoverAlreadyOnMap && undercoverAvailable.length > 0) {
+						const roll = Math.random();
+
+						if (roll < 0.45) {
+							chosen = randomFrom(undercoverAvailable);
+						} else {
+							chosen = randomFrom(
+								normalAvailable.length > 0 ? normalAvailable : available,
+							);
+						}
+					} else {
+						chosen = randomFrom(
+							normalAvailable.length > 0 ? normalAvailable : available,
+						);
+					}
 
 					return {
 						...s,
@@ -1049,24 +1032,19 @@ export default function StreetMapScene({ saveKey }: Props) {
 				/>
 
 				<HomebaseMarker onClick={handleHomebaseClick} />
-
 				<CharacterMarkers pins={CHARACTER_PINS} onSelect={handleCharacterSelect} />
-
 				<RecruitMarkers leads={state.recruitLeads} onSelect={handleRecruitSelect} />
-
 				<IncidentMarkers
 					incidents={state.incidents}
 					selectedId={state.selectedIncidentId}
 					onSelect={handleIncidentSelect}
 				/>
-
 				<SelectedIncidentFollower
 					incidents={state.incidents}
 					selectedId={state.selectedIncidentId}
 				/>
 			</MapContainer>
 
-			{/* Recruit / owned dossier */}
 			<AnimatePresence>
 				{activeDossier ? (
 					<>
@@ -1138,24 +1116,26 @@ export default function StreetMapScene({ saveKey }: Props) {
 											<div className="mt-5 grid gap-4">
 												{activeDossier.joinedAt ? (
 													<div className="rounded-xl border border-amber-900/30 bg-black/25 p-4">
-													<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
-														Joined
-													</div>
-													<div className="mt-2 text-sm text-amber-100/80">{activeDossier.joinedAt}</div>
+														<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
+															Joined
+														</div>
+														<div className="mt-2 text-sm text-amber-100/80">
+															{activeDossier.joinedAt}
+														</div>
 													</div>
 												) : null}
 
 												{activeDossier.backgroundNote ? (
 													<div className="rounded-xl border border-amber-900/30 bg-black/25 p-4">
-													<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
-														Background
-													</div>
-													<div className="mt-2 text-sm leading-6 text-amber-100/75">
-														{activeDossier.backgroundNote}
-													</div>
+														<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
+															Background
+														</div>
+														<div className="mt-2 text-sm leading-6 text-amber-100/75">
+															{activeDossier.backgroundNote}
+														</div>
 													</div>
 												) : null}
-												</div>
+											</div>
 
 											<p className="text-sm leading-6 text-amber-100/75">
 												{activeDossier.bio ?? "Backstory TBD."}
@@ -1233,7 +1213,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 				) : null}
 			</AnimatePresence>
 
-			{/* Dialogue box */}
 			<AnimatePresence>
 				{dialogue ? (
 					<motion.div
@@ -1244,20 +1223,20 @@ export default function StreetMapScene({ saveKey }: Props) {
 						className="absolute bottom-6 left-6 z-[2020] w-[min(52vw,720px)] min-w-[320px]"
 					>
 						<div className="overflow-hidden rounded-2xl border border-amber-900/40 bg-black/75 shadow-[0_18px_70px_rgba(0,0,0,0.55)] backdrop-blur-md">
-							<div className="flex items-stretch">
-							<div className="flex h-[180px] w-[148px] shrink-0 items-end justify-center overflow-hidden border-r border-amber-900/30 bg-black/30">
-								<div className="relative h-[170px] w-[132px] overflow-hidden rounded-md">
-									<Image
-										src={dialogue.portrait}
-										alt={dialogue.name}
-										fill
-										className="object-cover object-center"
-										sizes="132px"
-									/>
+							<div className="flex items-start">
+								<div className="shrink-0 border-r border-amber-900/30 bg-black/30 p-4">
+									<div className="relative h-[170px] w-[132px] overflow-hidden rounded-md">
+										<Image
+											src={dialogue.portrait}
+											alt={dialogue.name}
+											fill
+											className="object-cover object-center"
+											sizes="132px"
+										/>
+									</div>
 								</div>
-							</div>
 
-								<div className="flex min-h-[160px] flex-1 flex-col justify-between px-5 py-4">
+								<div className="flex min-h-[202px] flex-1 flex-col justify-between px-5 py-4">
 									<div>
 										<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
 											{dialogue.role}
@@ -1287,7 +1266,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 				) : null}
 			</AnimatePresence>
 
-			{/* Homebase roster panel */}
 			<AnimatePresence>
 				{showHomebasePanel && (
 					<motion.aside
@@ -1355,7 +1333,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 				)}
 			</AnimatePresence>
 
-			{/* Top zoom controls */}
 			<div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] flex justify-center pt-4">
 				<div className="pointer-events-auto inline-flex items-center gap-3 rounded-xl border border-amber-900/40 bg-black/40 backdrop-blur-md px-4 py-3 text-amber-200/70">
 					<div className="text-[11px] uppercase tracking-[0.22em] text-amber-400/70">
@@ -1382,7 +1359,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 				</div>
 			</div>
 
-			{/* Left incident rail */}
 			<div className="pointer-events-none absolute inset-y-16 left-0 z-[950] flex items-start">
 				<div className="pointer-events-auto mt-4">
 					<button

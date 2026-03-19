@@ -68,7 +68,7 @@ export const vigilantes: VigilanteSheet[] = [ //TODO add joined date for all. ma
         name: "Evan Vale",
         alias: "Vale",
         role: "Field Operative",
-        portrait: "/characters/FamiliarFace(DisguisedKim).png",
+        portrait: "/characters/DisguisedKim.png",
         age: 31,
         status: "Available",
         heat: 1,
