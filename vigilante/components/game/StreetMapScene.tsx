@@ -1,23 +1,83 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronUp, Home, Package2, X } from "lucide-react";
+import InventorySorterModal from "../minigames/InventorySorterModal";
 import type { LatLngBounds, LatLngTuple } from "leaflet";
-import {
-	MapContainer,
-	Marker,
-	TileLayer,
-	useMap,
-} from "react-leaflet";
+import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
+import Inventory from "./Inventory";
 import PoliceSystem from "./police/policeSystem";
 import type { PoliceEtaItem } from "./police/policeTypes";
 import { createClient } from "@supabase/supabase-js";
+import { vigilantes } from "@/app/components/data/vigilante";
+import VettingMinigameModal from "@/components/game/VettingMinigameModal";
+import {
+	INCIDENT_TEMPLATES,
+	shortenPlaceName,
+	type IncidentArchetype,
+	type IncidentTemplate,
+} from "@/lib/incidentTemplates";
 
-// ---------------------------------------------------------------------------
-// Tile buffer patch — bumps keepBuffer and kills fade-in flash
-// ---------------------------------------------------------------------------
+// ── Inlined helpers (not exported by incidentTemplates) ───────────────────────
+
+function archetypeSuccessBase(archetype: IncidentArchetype): number {
+	switch (archetype) {
+		case "crime":
+			return 0.65;
+		case "fire_rescue":
+			return 0.55;
+		case "medical":
+			return 0.6;
+		case "disaster":
+			return 0.45;
+		case "traffic":
+			return 0.7;
+		default:
+			return 0.6;
+	}
+}
+
+function pickIncidentTemplate(): IncidentTemplate {
+	const total = INCIDENT_TEMPLATES.reduce((sum, t) => sum + t.weight, 0);
+	let r = Math.random() * total;
+	for (const t of INCIDENT_TEMPLATES) {
+		r -= t.weight;
+		if (r <= 0) return t;
+	}
+	return INCIDENT_TEMPLATES[INCIDENT_TEMPLATES.length - 1]!;
+}
+
+function fillIncidentTemplate(
+	template: IncidentTemplate,
+	placeName: string,
+): {
+	archetype: IncidentArchetype;
+	typeLabel: string;
+	title: string;
+	summary: string;
+} {
+	const filled = template.summary.replace(/\{place\}/g, placeName);
+	return {
+		archetype: template.archetype,
+		typeLabel: template.typeLabel,
+		title: `${template.typeLabel} — ${placeName}`,
+		summary: filled,
+	};
+}
+
+// Inlined from @/lib/osmPlaces
+
+type OsmPlace = { name: string; lat: number; lng: number; kind?: string };
+
 if (typeof window !== "undefined") {
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
 	const Lf = require("leaflet");
@@ -42,20 +102,16 @@ if (typeof window !== "undefined") {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 type Props = {
 	saveKey: string;
 };
 
-type IncidentCategory = "fire" | "robbery" | "medical";
 type IncidentStatus = "active" | "resolved";
 
 type Incident = {
 	id: string;
-	category: IncidentCategory;
+	category: IncidentArchetype;
+	typeLabel: string;
 	status: IncidentStatus;
 	lat: number;
 	lng: number;
@@ -63,9 +119,28 @@ type Incident = {
 	summary: string;
 	createdAt: number;
 	expiresAt: number;
-	resolvedAt?: number;
 	successChance: number;
-	outcome?: "success" | "failure";
+};
+
+type CharacterKind = "vigilante" | "citizen" | "police";
+type OverlayMode = "recruit" | "owned";
+
+type CharacterPin = {
+	id: string;
+	name: string;
+	initial: string;
+	kind: CharacterKind;
+	lat: number;
+	lng: number;
+};
+
+type RecruitLead = {
+	id: string;
+	vigilanteId: string;
+	lat: number;
+	lng: number;
+	createdAt: number;
+	expiresAt: number;
 };
 
 type GameState = {
@@ -74,14 +149,23 @@ type GameState = {
 	incidents: Incident[];
 	showIncidentPanel: boolean;
 	showPolicePanel: boolean;
+	showMinigamePanel: boolean;
+	showInventoryPanel: boolean;
+	ownedVigilanteIds: string[];
+	recruitLeads: RecruitLead[];
 };
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 const CENTER: LatLngTuple = [40.7128, -74.006];
 const BASE: LatLngTuple = [40.7139, -74.0038];
+
+const OWNED_VIG_MARKER_OFFSETS: { dLat: number; dLng: number }[] = [
+	{ dLat: 0.0028, dLng: -0.0022 },
+	{ dLat: -0.0019, dLng: 0.0026 },
+	{ dLat: 0.0012, dLng: 0.0029 },
+	{ dLat: -0.0025, dLng: -0.0014 },
+	{ dLat: 0.0021, dLng: 0.001 },
+	{ dLat: -0.0012, dLng: -0.0028 },
+];
 
 const LEVELS = [
 	{ id: 1, label: "L1", zoomOut: 15, zoomIn: 15 },
@@ -97,15 +181,173 @@ const supabase =
 		? createClient(supabaseUrl, supabaseAnonKey)
 		: null;
 
+type MinigameId = "inventory-sorter";
+
+type MinigameOption = {
+	id: MinigameId;
+	title: string;
+	description: string;
+	status?: string;
+};
+
+const MINIGAME_OPTIONS: MinigameOption[] = [
+	{
+		id: "inventory-sorter",
+		title: "Inventory Sorter",
+		description: "Reorganize emergency supplies to earn extra resources.",
+		status: "Available",
+	},
+];
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+const STATIC_CHARACTER_BASES: CharacterPin[] = [
+	{
+		id: "cit-oldman",
+		name: "Old Man",
+		initial: "O",
+		kind: "citizen",
+		lat: 40.713,
+		lng: -74.0112,
+	},
+	{
+		id: "cit-girl",
+		name: "Girl",
+		initial: "G",
+		kind: "citizen",
+		lat: 40.7178,
+		lng: -74.0014,
+	},
+	{
+		id: "cit-woman",
+		name: "Woman",
+		initial: "W",
+		kind: "citizen",
+		lat: 40.7102,
+		lng: -74.0005,
+	},
+	{
+		id: "cit-helper",
+		name: "Helper",
+		initial: "H",
+		kind: "citizen",
+		lat: 40.7185,
+		lng: -74.0072,
+	},
+	{
+		id: "cop-diaz",
+		name: "Officer Diaz",
+		initial: "D",
+		kind: "police",
+		lat: 40.7129,
+		lng: -73.9998,
+	},
+	{
+		id: "cop-kim",
+		name: "Detective Kim",
+		initial: "K",
+		kind: "police",
+		lat: 40.7166,
+		lng: -74.01,
+	},
+	{
+		id: "chief-williams",
+		name: "Chief Williams",
+		initial: "C",
+		kind: "police",
+		lat: 40.7095,
+		lng: -74.0069,
+	},
+];
 
-function incidentCategoryLabel(cat: IncidentCategory) {
-	if (cat === "fire") return "Fire";
-	if (cat === "robbery") return "Robbery";
-	return "Medical";
-}
+type DialogueRole = "Citizen" | "Police" | "Chief";
+
+type DialogueState = {
+	name: string;
+	role: DialogueRole;
+	portrait: string;
+	text: string;
+} | null;
+
+const NPC_DIALOGUE = {
+	citizens: [
+		{
+			name: "Old Man",
+			role: "Citizen" as const,
+			portrait: "/npcs/OldMan.png",
+			lines: [
+				"I've lived on this block thirty years. Something's wrong tonight.",
+				"I heard boots in the alley and then everything went quiet.",
+				"You vigilantes are the only ones keeping this city together.",
+			],
+		},
+		{
+			name: "Girl",
+			role: "Citizen" as const,
+			portrait: "/npcs/Girl.png",
+			lines: [
+				"I saw them run past the subway entrance. They looked armed.",
+				"If your crew is taking this job, don't be late.",
+				"People are scared. Nobody's waiting for the cops anymore.",
+			],
+		},
+		{
+			name: "Woman",
+			role: "Citizen" as const,
+			portrait: "/npcs/Woman.png",
+			lines: [
+				"The whole street feels wrong tonight. Like everyone's waiting for something.",
+				"I'm not asking questions. I just need this handled.",
+				"They moved fast. Professional fast.",
+			],
+		},
+		{
+			name: "Helper",
+			role: "Citizen" as const,
+			portrait: "/npcs/Helper.png",
+			lines: [
+				"I can point your people to the exact building if they move now.",
+				"I've got eyes on the block. Tell me where you want me.",
+				"Your vigilantes aren't subtle, but they're faster than dispatch.",
+			],
+		},
+	],
+	police: [
+		{
+			name: "Officer Diaz",
+			role: "Police" as const,
+			portrait: "/npcs/OfficerDiaz.png",
+			lines: [
+				"You better hope I don't catch any of your people at my crime scenes.",
+				"Civilian intervention is punishable, don't test me.",
+				"HEY! STOP RIGHT THERE!",
+			],
+		},
+		{
+			name: "Detective Kim",
+			role: "Police" as const,
+			portrait: "/npcs/DetectiveKim.png",
+			lines: [
+				"This city makes vigilantes out of everyone eventually.",
+				"When your people make messes for us to clean up, we don't get the chance to focus on what's really important...",
+				"There's a pattern here. I know what you've been up to… I just need to prove it.",
+			],
+		},
+	],
+	chief: {
+		name: "Chief Williams",
+		role: "Chief" as const,
+		portrait: "/npcs/ChiefWilliams.png",
+		lines: [
+			"The city is slipping faster than my officers can hold it together.",
+			"Damn vigilantes running around the city thinking they're helping us. We don't need them.",
+			"If you're going to play guardian, then act like professionals.",
+		],
+	},
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatEta(ms: number) {
 	const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -122,24 +364,89 @@ function levelConfig(level: number) {
 	return LEVELS[Math.max(0, Math.min(level - 1, LEVELS.length - 1))];
 }
 
+function randomFrom<T>(arr: T[]): T {
+	return arr[Math.floor(Math.random() * arr.length)];
+}
+
 function sampleInBounds(bounds: LatLngBounds): { lat: number; lng: number } {
 	const south = bounds.getSouth();
 	const north = bounds.getNorth();
 	const west = bounds.getWest();
 	const east = bounds.getEast();
-
 	const inset = 0.04;
 	const latSpan = (north - south) * (1 - inset * 2);
 	const lngSpan = (east - west) * (1 - inset * 2);
-
-	const lat = south + (north - south) * inset + Math.random() * latSpan;
-	const lng = west + (east - west) * inset + Math.random() * lngSpan;
-
-	return { lat, lng };
+	return {
+		lat: south + (north - south) * inset + Math.random() * latSpan,
+		lng: west + (east - west) * inset + Math.random() * lngSpan,
+	};
 }
 
-function computeSuccessChance(cat: IncidentCategory, lifetimeMs: number) {
-	const base = cat === "fire" ? 0.65 : cat === "robbery" ? 0.5 : 0.7;
+function nudgeNearby(lat: number, lng: number) {
+	const maxOffset = 0.0014;
+	return {
+		lat: lat + (Math.random() - 0.5) * maxOffset,
+		lng: lng + (Math.random() - 0.5) * maxOffset,
+	};
+}
+
+function nudgeNearPoint(lat: number, lng: number, maxOffset = 0.00085) {
+	return {
+		lat: lat + (Math.random() - 0.5) * maxOffset,
+		lng: lng + (Math.random() - 0.5) * maxOffset,
+	};
+}
+
+function moveToward(
+	from: { lat: number; lng: number },
+	to: { lat: number; lng: number },
+	factor: number,
+) {
+	return {
+		lat: from.lat + (to.lat - from.lat) * factor,
+		lng: from.lng + (to.lng - from.lng) * factor,
+	};
+}
+
+function distanceSq(
+	a: { lat: number; lng: number },
+	b: { lat: number; lng: number },
+) {
+	const dLat = a.lat - b.lat;
+	const dLng = a.lng - b.lng;
+	return dLat * dLat + dLng * dLng;
+}
+
+function pushAwayFromPoint(
+	point: { lat: number; lng: number },
+	center: { lat: number; lng: number },
+	minDistance: number,
+) {
+	const dLat = point.lat - center.lat;
+	const dLng = point.lng - center.lng;
+	const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+	if (dist >= minDistance) return point;
+	if (dist < 1e-9) return { lat: center.lat + minDistance, lng: center.lng };
+	const scale = minDistance / dist;
+	return {
+		lat: center.lat + dLat * scale,
+		lng: center.lng + dLng * scale,
+	};
+}
+
+function isLikelyWaterOnlyPoi(p: OsmPlace): boolean {
+	const k = (p.kind ?? "").toLowerCase();
+	if (k === "ferry_terminal") return true;
+	const n = p.name.toLowerCase();
+	if (n.includes("ferry terminal")) return true;
+	return false;
+}
+
+function computeSuccessChance(
+	archetype: IncidentArchetype,
+	lifetimeMs: number,
+) {
+	const base = archetypeSuccessBase(archetype);
 	const t = Math.min(lifetimeMs / (5 * 60_000), 1);
 	const noise = (Math.random() - 0.5) * 0.1;
 	return Math.round(
@@ -147,51 +454,119 @@ function computeSuccessChance(cat: IncidentCategory, lifetimeMs: number) {
 	);
 }
 
-function makeIncident(lat: number, lng: number): Incident {
+function makeIncident(lat: number, lng: number, place: OsmPlace): Incident {
 	const now = Date.now();
-	const categories: IncidentCategory[] = ["fire", "robbery", "medical"];
-	const category = categories[Math.floor(Math.random() * categories.length)];
 	const lifetimeMs = 30_000;
-
+	const template = pickIncidentTemplate();
+	const filled = fillIncidentTemplate(template, shortenPlaceName(place.name));
 	return {
 		id: crypto.randomUUID(),
-		category,
+		category: filled.archetype,
+		typeLabel: filled.typeLabel,
 		status: "active",
 		lat,
 		lng,
-		title:
-			category === "fire"
-				? "Alleyway Fire"
-				: category === "robbery"
-					? "Corner Store Robbery"
-					: "Medical Emergency",
-		summary:
-			category === "fire"
-				? "Reports of smoke near a tenement block. Neighbors say they heard shouting."
-				: category === "robbery"
-					? "Masked figures spotted running from a storefront. No sirens yet."
-					: "Caller reports someone collapsed on a dimly lit street.",
+		title: filled.title,
+		summary: filled.summary,
 		createdAt: now,
 		expiresAt: now + lifetimeMs,
-		successChance: computeSuccessChance(category, lifetimeMs),
+		successChance: computeSuccessChance(filled.archetype, lifetimeMs),
 	};
 }
 
+function makeRecruitLead(
+	vigilanteId: string,
+	bounds: LatLngBounds,
+): RecruitLead {
+	const now = Date.now();
+	const lifetimeMs = 40_000;
+	const { lat, lng } = sampleInBounds(bounds);
+	return {
+		id: `recruit_${vigilanteId}_${now.toString(16)}`,
+		vigilanteId,
+		lat,
+		lng,
+		createdAt: now,
+		expiresAt: now + lifetimeMs,
+	};
+}
+
+/**
+ * Spatially uniform POI picker.
+ *
+ * Divides the bounding box into a COLS×ROWS grid, shuffles the cells, then
+ * walks them until it finds one containing at least one POI — and returns a
+ * random POI from that cell. Every cell has equal probability of being chosen
+ * first, so incidents spread evenly across the map regardless of how densely
+ * OSM has tagged any given neighbourhood.
+ *
+ * Falls back to a plain random pick if somehow all cells are empty.
+ */
+const SPAWN_GRID_COLS = 8;
+const SPAWN_GRID_ROWS = 5;
+
+function pickSpatiallyUniformPoi(
+	places: OsmPlace[],
+	bounds: LatLngBounds,
+): OsmPlace | null {
+	if (places.length === 0) return null;
+
+	const land = places.filter((p) => !isLikelyWaterOnlyPoi(p));
+	const pool = land.length > 0 ? land : places;
+
+	const s = bounds.getSouth();
+	const n = bounds.getNorth();
+	const w = bounds.getWest();
+	const e = bounds.getEast();
+
+	// Shuffle cell indices so every spawn picks a fresh random cell order
+	const cellCount = SPAWN_GRID_COLS * SPAWN_GRID_ROWS;
+	const cellOrder = Array.from({ length: cellCount }, (_, i) => i);
+	for (let i = cellOrder.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[cellOrder[i], cellOrder[j]] = [cellOrder[j]!, cellOrder[i]!];
+	}
+
+	for (const idx of cellOrder) {
+		const row = Math.floor(idx / SPAWN_GRID_COLS);
+		const col = idx % SPAWN_GRID_COLS;
+		const cellS = s + (row / SPAWN_GRID_ROWS) * (n - s);
+		const cellN = s + ((row + 1) / SPAWN_GRID_ROWS) * (n - s);
+		const cellW = w + (col / SPAWN_GRID_COLS) * (e - w);
+		const cellE = w + ((col + 1) / SPAWN_GRID_COLS) * (e - w);
+		const pad = 1e-4;
+		const inCell = pool.filter(
+			(p) =>
+				p.lat >= cellS - pad &&
+				p.lat <= cellN + pad &&
+				p.lng >= cellW - pad &&
+				p.lng <= cellE + pad,
+		);
+		if (inCell.length > 0) return randomFrom(inCell);
+	}
+
+	return randomFrom(pool); // fallback: all cells were empty
+}
+
+// ── Icon factories ────────────────────────────────────────────────────────────
+
 function makeIncidentIcon(
-	cat: IncidentCategory,
+	_category: IncidentArchetype,
 	isSelected: boolean,
 	isResolved: boolean,
 ) {
 	const border = isSelected ? "#b91c1c" : "#7f1d1d";
 	const baseColor = "#f97373";
-	const bg = isResolved ? "rgba(24,24,27,0.9)" : "rgba(127,29,29,0.6)";
+	const bg = "rgba(127,29,29,0.6)";
+	const resolvedBg = "rgba(24,24,27,0.9)";
+	const resolvedBorder = "#52525b";
 	const pulse = !isResolved && isSelected;
 
 	const html = `<div style="
 		width:28px;height:28px;border-radius:999px;
-		border:2px solid ${border};background:${bg};
+		border:2px solid ${isResolved ? resolvedBorder : border};background:${isResolved ? resolvedBg : bg};
 		display:flex;align-items:center;justify-content:center;
-		color:${baseColor};font-weight:800;font-size:16px;
+		color:${isResolved ? "#a1a1aa" : baseColor};font-weight:800;font-size:16px;
 		text-shadow:0 0 4px rgba(0,0,0,0.9);
 		box-shadow:0 0 16px rgba(0,0,0,0.9);">!</div>`;
 
@@ -273,6 +648,58 @@ async function persistIncidentStatus(
 // ---------------------------------------------------------------------------
 // ZoomController
 // ---------------------------------------------------------------------------
+function makeCharacterIcon(initial: string, kind: CharacterKind) {
+	const palette =
+		kind === "police"
+			? { border: "#1d4ed8", bg: "rgba(30,64,175,0.78)", text: "#dbeafe" }
+			: kind === "vigilante"
+				? {
+						border: "#b45309",
+						bg: "rgba(120,53,15,0.82)",
+						text: "#fde68a",
+					}
+				: {
+						border: "#4b5563",
+						bg: "rgba(55,65,81,0.8)",
+						text: "#f3f4f6",
+					};
+
+	const html = `<div style="
+		width:30px;height:30px;border-radius:999px;
+		border:2px solid ${palette.border};background:${palette.bg};
+		display:flex;align-items:center;justify-content:center;
+		color:${palette.text};font-weight:800;font-size:14px;
+		text-shadow:0 0 4px rgba(0,0,0,0.8);
+		box-shadow:0 0 14px rgba(0,0,0,0.85);cursor:pointer;
+	">${initial}</div>`;
+
+	return L.divIcon({
+		html,
+		className: "vigilante-character-icon",
+		iconSize: [30, 30],
+		iconAnchor: [15, 15],
+	});
+}
+
+function makeRecruitIcon(initial: string) {
+	const html = `<div style="
+		width:34px;height:34px;border-radius:999px;
+		border:2px solid #b45309;background:rgba(120,53,15,0.86);
+		display:flex;align-items:center;justify-content:center;
+		color:#fde68a;font-weight:800;font-size:15px;
+		text-shadow:0 0 4px rgba(0,0,0,0.85);
+		box-shadow:0 0 18px rgba(120,53,15,0.55);cursor:pointer;
+	">${initial}</div>`;
+
+	return L.divIcon({
+		html,
+		className: "vigilante-recruit-icon",
+		iconSize: [34, 34],
+		iconAnchor: [17, 17],
+	});
+}
+
+// ── Map sub-components ────────────────────────────────────────────────────────
 
 function ZoomController({
 	level,
@@ -283,30 +710,34 @@ function ZoomController({
 }) {
 	const map = useMap();
 
-	const applyLevel = (lvl: ReturnType<typeof levelConfig>) => {
+	useEffect(() => {
+		const lvl = levelConfig(level);
+		const pane = map.getPane("mapPane");
+		if (!pane) return;
+
 		map.setMinZoom(lvl.zoomOut);
 		map.setMaxZoom(lvl.zoomIn);
 		map.setMaxBounds(undefined as unknown as LatLngBounds);
 		map.invalidateSize({ animate: false });
 
 		requestAnimationFrame(() => {
+			const safePane = map.getPane("mapPane");
+			if (!safePane) return;
 			map.setView(BASE, lvl.zoomOut, { animate: false });
+
 			requestAnimationFrame(() => {
+				const finalPane = map.getPane("mapPane");
+				if (!finalPane) return;
 				try {
 					const b = map.getBounds();
 					map.setMaxBounds(b);
 					onBoundsReady(lvl.id, b);
 				} catch {
-					// map already unmounted
+					//
 				}
 			});
 		});
-	};
-
-	useEffect(() => {
-		applyLevel(levelConfig(level));
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [level, map]);
+	}, [level, map, onBoundsReady]);
 
 	return null;
 }
@@ -369,6 +800,60 @@ const PoliceEtaBar = React.memo(function PoliceEtaBar({
 		</div>
 	);
 });
+function CharacterMarkers({
+	pins,
+	onSelect,
+}: {
+	pins: CharacterPin[];
+	onSelect: (pin: CharacterPin) => void;
+}) {
+	return (
+		<Pane name="characterPane" style={{ zIndex: 700 }}>
+			{pins.map((pin) => {
+				const key = `${pin.id}-${pin.lat.toFixed(5)}-${pin.lng.toFixed(5)}`;
+				return (
+					<Marker
+						key={key}
+						position={[pin.lat, pin.lng]}
+						icon={makeCharacterIcon(pin.initial, pin.kind)}
+						zIndexOffset={pin.kind === "vigilante" ? 11000 : 0}
+						interactive
+						riseOnHover
+						eventHandlers={{ click: () => onSelect(pin) }}
+					/>
+				);
+			})}
+		</Pane>
+	);
+}
+
+function RecruitMarkers({
+	leads,
+	onSelect,
+}: {
+	leads: RecruitLead[];
+	onSelect: (lead: RecruitLead) => void;
+}) {
+	return (
+		<Pane name="recruitPane" style={{ zIndex: 860 }}>
+			{leads.map((lead) => {
+				const v = vigilantes.find((vv) => vv.id === lead.vigilanteId);
+				if (!v) return null;
+				return (
+					<Marker
+						key={lead.id}
+						position={[lead.lat, lead.lng]}
+						icon={makeRecruitIcon(v.name[0]?.toUpperCase() ?? "V")}
+						zIndexOffset={15000}
+						interactive
+						riseOnHover
+						eventHandlers={{ click: () => onSelect(lead) }}
+					/>
+				);
+			})}
+		</Pane>
+	);
+}
 
 function IncidentMarkers({
 	incidents,
@@ -379,23 +864,50 @@ function IncidentMarkers({
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 }) {
+	const iconCacheRef = useRef<
+		Map<string, { selected: boolean; icon: L.DivIcon }>
+	>(new Map());
+
+	useEffect(() => {
+		const activeIds = new Set(
+			incidents.filter((i) => i.status === "active").map((i) => i.id),
+		);
+		for (const key of iconCacheRef.current.keys()) {
+			if (!activeIds.has(key)) iconCacheRef.current.delete(key);
+		}
+	}, [incidents]);
+
 	return (
-		<>
+		<Pane name="incidentPane" style={{ zIndex: 820 }}>
 			{incidents
 				.filter((inc) => inc.status === "active")
 				.map((inc) => (
 					<Marker
 						key={inc.id}
 						position={[inc.lat, inc.lng]}
-						icon={makeIncidentIcon(
-							inc.category,
-							inc.id === selectedId,
-							false,
-						)}
+						icon={(() => {
+							const isSelected = inc.id === selectedId;
+							const cached = iconCacheRef.current.get(inc.id);
+							if (cached && cached.selected === isSelected)
+								return cached.icon;
+							const icon = makeIncidentIcon(
+								inc.category,
+								isSelected,
+								false,
+							);
+							iconCacheRef.current.set(inc.id, {
+								selected: isSelected,
+								icon,
+							});
+							return icon;
+						})()}
+						zIndexOffset={10000}
+						interactive
+						riseOnHover
 						eventHandlers={{ click: () => onSelect(inc.id) }}
 					/>
 				))}
-		</>
+		</Pane>
 	);
 }
 
@@ -417,15 +929,81 @@ function SelectedIncidentFollower({
 		const inc = incidents.find((i) => i.id === selectedId);
 		if (!inc) return;
 		map.setView([inc.lat, inc.lng], map.getZoom(), { animate: true });
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [selectedId]);
+	}, [incidents, map, selectedId]);
 
 	return null;
 }
 
-// ---------------------------------------------------------------------------
-// State persistence
-// ---------------------------------------------------------------------------
+// ── Persistence ───────────────────────────────────────────────────────────────
+
+const INCIDENT_ARCHETYPES: IncidentArchetype[] = [
+	"crime",
+	"fire_rescue",
+	"medical",
+	"disaster",
+	"traffic",
+];
+
+function normalizeIncidentArchetype(c: unknown): IncidentArchetype {
+	if (c === "fire" || c === "fire_rescue") return "fire_rescue";
+	if (c === "robbery" || c === "crime") return "crime";
+	if (c === "medical") return "medical";
+	if (
+		typeof c === "string" &&
+		INCIDENT_ARCHETYPES.includes(c as IncidentArchetype)
+	) {
+		return c as IncidentArchetype;
+	}
+	return "crime";
+}
+
+function fallbackTypeLabel(archetype: IncidentArchetype): string {
+	switch (archetype) {
+		case "crime":
+			return "Police call";
+		case "fire_rescue":
+			return "Fire / Rescue";
+		case "medical":
+			return "Medical";
+		case "disaster":
+			return "Disaster";
+		case "traffic":
+			return "Traffic";
+		default:
+			return "Incident";
+	}
+}
+
+function parseStoredIncident(raw: unknown): Incident | null {
+	if (!raw || typeof raw !== "object") return null;
+	const o = raw as Record<string, unknown>;
+	if (typeof o.id !== "string") return null;
+	if (typeof o.lat !== "number" || typeof o.lng !== "number") return null;
+	if (o.status !== "active" && o.status !== "resolved") return null;
+	if (typeof o.title !== "string" || typeof o.summary !== "string")
+		return null;
+	if (typeof o.createdAt !== "number" || typeof o.expiresAt !== "number")
+		return null;
+	if (typeof o.successChance !== "number") return null;
+	const category = normalizeIncidentArchetype(o.category);
+	const typeLabel =
+		typeof o.typeLabel === "string" && o.typeLabel.length > 0
+			? o.typeLabel
+			: fallbackTypeLabel(category);
+	return {
+		id: o.id,
+		category,
+		typeLabel,
+		status: o.status,
+		lat: o.lat,
+		lng: o.lng,
+		title: o.title,
+		summary: o.summary,
+		createdAt: o.createdAt,
+		expiresAt: o.expiresAt,
+		successChance: o.successChance,
+	};
+}
 
 function initialState(): GameState {
 	return {
@@ -434,6 +1012,10 @@ function initialState(): GameState {
 		incidents: [],
 		showIncidentPanel: true,
 		showPolicePanel: true,
+		showMinigamePanel: false,
+		showInventoryPanel: true,
+		ownedVigilanteIds: ["bruce", "parya"],
+		recruitLeads: [],
 	};
 }
 
@@ -452,7 +1034,9 @@ function loadState(saveKey: string): GameState {
 					? p.selectedIncidentId
 					: null,
 			incidents: Array.isArray(p.incidents)
-				? (p.incidents as Incident[])
+				? p.incidents
+						.map(parseStoredIncident)
+						.filter((x): x is Incident => x !== null)
 				: [],
 			showIncidentPanel:
 				typeof p.showIncidentPanel === "boolean"
@@ -462,6 +1046,20 @@ function loadState(saveKey: string): GameState {
 				typeof p.showPolicePanel === "boolean"
 					? p.showPolicePanel
 					: true,
+			showMinigamePanel:
+				typeof p.showMinigamePanel === "boolean"
+					? p.showMinigamePanel
+					: false,
+			showInventoryPanel:
+				typeof p.showInventoryPanel === "boolean"
+					? p.showInventoryPanel
+					: true,
+			ownedVigilanteIds: Array.isArray(p.ownedVigilanteIds)
+				? (p.ownedVigilanteIds as string[])
+				: ["bruce", "parya"],
+			recruitLeads: Array.isArray(p.recruitLeads)
+				? (p.recruitLeads as RecruitLead[])
+				: [],
 		};
 	} catch {
 		return initialState();
@@ -472,21 +1070,52 @@ function saveState(saveKey: string, state: GameState) {
 	localStorage.setItem(saveKey, JSON.stringify(state));
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
+// ── Main component ────────────────────────────────────────────────────────────
 
 export default function StreetMapScene({ saveKey }: Props) {
 	const [state, setState] = useState<GameState>(() => initialState());
 	const [policeEtaItems, setPoliceEtaItems] = useState<PoliceEtaItem[]>([]);
+	const [selectedRecruitLeadId, setSelectedRecruitLeadId] = useState<
+		string | null
+	>(null);
+	const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<
+		string | null
+	>(null);
+	const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
+	const [overlayMode, setOverlayMode] = useState<OverlayMode>("recruit");
+	const [dialogue, setDialogue] = useState<DialogueState>(null);
+	const [showVettingModal, setShowVettingModal] = useState(false);
 	const stateRef = useRef<GameState>(initialState());
+
+	const helperBase =
+		STATIC_CHARACTER_BASES.find((p) => p.id === "cit-helper") ??
+		STATIC_CHARACTER_BASES[0];
+	const diazBase =
+		STATIC_CHARACTER_BASES.find((p) => p.id === "cop-diaz") ??
+		STATIC_CHARACTER_BASES[0];
+
+	const [helperPos, setHelperPos] = useState({
+		lat: helperBase.lat,
+		lng: helperBase.lng,
+	});
+	const [diazPos, setDiazPos] = useState({
+		lat: diazBase.lat,
+		lng: diazBase.lng,
+	});
+
+	const levelBoundsRef = useRef<Map<number, LatLngBounds>>(new Map());
+	const spawnPlacesByLevelRef = useRef<Map<number, OsmPlace[]>>(new Map());
+	/** Incremented per level on each new bounds+fetch so stale responses are ignored. */
+	const placesFetchGenRef = useRef<Map<number, number>>(new Map());
+	const placesAbortByLevelRef = useRef<Map<number, AbortController>>(
+		new Map(),
+	);
 
 	useEffect(() => {
 		const loaded = loadState(saveKey);
 		stateRef.current = loaded;
 		setState(loaded);
 	}, [saveKey]);
-
 	useEffect(() => {
 		saveState(saveKey, state);
 	}, [saveKey, state]);
@@ -495,11 +1124,62 @@ export default function StreetMapScene({ saveKey }: Props) {
 		stateRef.current = state;
 	}, [state]);
 
-	const levelBoundsRef = useRef<Map<number, LatLngBounds>>(new Map());
+	// Called by ZoomController each time the active level settles.
+	// Aborts any in-flight fetch for that tier and only applies the latest result.
+	const handleBoundsReady = useCallback(
+		(level: number, bounds: LatLngBounds) => {
+			levelBoundsRef.current.set(level, bounds);
 
-	const handleBoundsReady = (level: number, bounds: LatLngBounds) => {
-		levelBoundsRef.current.set(level, bounds);
-	};
+			const prevAbort = placesAbortByLevelRef.current.get(level);
+			prevAbort?.abort();
+			const ac = new AbortController();
+			placesAbortByLevelRef.current.set(level, ac);
+
+			const gen = (placesFetchGenRef.current.get(level) ?? 0) + 1;
+			placesFetchGenRef.current.set(level, gen);
+
+			const south = bounds.getSouth();
+			const west = bounds.getWest();
+			const north = bounds.getNorth();
+			const east = bounds.getEast();
+			const params = new URLSearchParams({
+				south: String(south),
+				west: String(west),
+				north: String(north),
+				east: String(east),
+			});
+
+			void fetch(`/api/osm/places?${params.toString()}`, {
+				signal: ac.signal,
+			})
+				.then(async (r) => {
+					if (placesFetchGenRef.current.get(level) !== gen) return;
+					const data = (r.ok ? await r.json() : { places: [] }) as {
+						places?: OsmPlace[];
+					};
+					if (placesFetchGenRef.current.get(level) !== gen) return;
+					spawnPlacesByLevelRef.current.set(
+						level,
+						Array.isArray(data.places) ? data.places : [],
+					);
+				})
+				.catch((err: unknown) => {
+					if (
+						err &&
+						typeof err === "object" &&
+						"name" in err &&
+						(err as { name?: string }).name === "AbortError"
+					) {
+						return;
+					}
+					if (placesFetchGenRef.current.get(level) !== gen) return;
+					spawnPlacesByLevelRef.current.set(level, []);
+				});
+		},
+		[],
+	);
+
+	// ── Incident helpers ──────────────────────────────────────────────────────
 
 	const removeIncidentLocally = (id: string) => {
 		setState((s) => ({
@@ -521,6 +1201,10 @@ export default function StreetMapScene({ saveKey }: Props) {
 	};
 
 	const handleIncidentSelect = (id: string) => {
+		setSelectedRecruitLeadId(null);
+		setSelectedOwnedVigilanteId(null);
+		setDialogue(null);
+		setShowVettingModal(false);
 		setState((s) => {
 			if (s.selectedIncidentId === id && s.showIncidentPanel) {
 				return {
@@ -529,7 +1213,6 @@ export default function StreetMapScene({ saveKey }: Props) {
 					showIncidentPanel: false,
 				};
 			}
-
 			const incidents = [...s.incidents];
 			const idx = incidents.findIndex((i) => i.id === id);
 			if (idx > 0) {
@@ -546,10 +1229,92 @@ export default function StreetMapScene({ saveKey }: Props) {
 		});
 	};
 
+	const handleRecruitSelect = (lead: RecruitLead) => {
+		setDialogue(null);
+		setShowVettingModal(false);
+		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setOverlayMode("recruit");
+		setSelectedOwnedVigilanteId(null);
+		setSelectedRecruitLeadId(lead.id);
+	};
+
+	const handleOwnedVigilanteSelect = (vigilanteId: string) => {
+		setDialogue(null);
+		setShowVettingModal(false);
+		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setOverlayMode("owned");
+		setSelectedRecruitLeadId(null);
+		setSelectedOwnedVigilanteId(vigilanteId);
+	};
+
+	const handleCharacterSelect = (pin: CharacterPin) => {
+		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setSelectedRecruitLeadId(null);
+		setSelectedOwnedVigilanteId(null);
+		setShowVettingModal(false);
+
+		if (pin.kind === "vigilante") {
+			handleOwnedVigilanteSelect(pin.id);
+			return;
+		}
+
+		if (pin.kind === "citizen") {
+			const citizen =
+				NPC_DIALOGUE.citizens.find((c) => c.name === pin.name) ??
+				NPC_DIALOGUE.citizens[0];
+			setDialogue({
+				name: citizen.name,
+				role: citizen.role,
+				portrait: citizen.portrait,
+				text: randomFrom(citizen.lines),
+			});
+			return;
+		}
+
+		if (pin.name === "Chief Williams") {
+			setDialogue({
+				name: NPC_DIALOGUE.chief.name,
+				role: NPC_DIALOGUE.chief.role,
+				portrait: NPC_DIALOGUE.chief.portrait,
+				text: randomFrom(NPC_DIALOGUE.chief.lines),
+			});
+			return;
+		}
+
+		const officer =
+			NPC_DIALOGUE.police.find((p) => p.name === pin.name) ??
+			NPC_DIALOGUE.police[0];
+		setDialogue({
+			name: officer.name,
+			role: officer.role,
+			portrait: officer.portrait,
+			text: randomFrom(officer.lines),
+		});
+	};
+
+	const handleHireSelected = () => {
+		const lead = state.recruitLeads.find(
+			(r) => r.id === selectedRecruitLeadId,
+		);
+		if (!lead) return;
+		setState((s) => ({
+			...s,
+			ownedVigilanteIds: s.ownedVigilanteIds.includes(lead.vigilanteId)
+				? s.ownedVigilanteIds
+				: [...s.ownedVigilanteIds, lead.vigilanteId],
+			recruitLeads: s.recruitLeads.filter((r) => r.id !== lead.id),
+		}));
+		setSelectedRecruitLeadId(null);
+		setShowVettingModal(false);
+	};
+
+	// ── Incident spawner — random POI, no grid ────────────────────────────────
 	useEffect(() => {
+		if (inventorySorterOpen) return;
+
 		let alive = true;
-		const MAX_ACTIVE = 20;
-		const SPAWN_INTERVAL_MS = 20_000;
+		const MAX_ACTIVE = 100;
+		const SPAWN_INTERVAL_MS = 1_000;
 
 		const scheduleNext = () => {
 			if (!alive) return;
@@ -561,27 +1326,103 @@ export default function StreetMapScene({ saveKey }: Props) {
 				const activeCount = currentState.incidents.filter(
 					(i) => i.status === "active",
 				).length;
-
-				if (activeCount < MAX_ACTIVE) {
-					const bounds =
-						levelBoundsRef.current.get(currentState.level) ??
-						levelBoundsRef.current.get(currentState.level - 1) ??
-						levelBoundsRef.current.get(currentState.level + 1) ??
-						[...levelBoundsRef.current.values()][0];
-
-					if (bounds) {
-						const { lat, lng } = sampleInBounds(bounds);
-						const incident = makeIncident(lat, lng);
-
-						setState((s) => ({
-							...s,
-							incidents: [...s.incidents, incident],
-						}));
-
-						void persistCreatedIncident(incident);
-					}
+				if (activeCount >= MAX_ACTIVE) {
+					scheduleNext();
+					return;
 				}
 
+				const bounds = levelBoundsRef.current.get(currentState.level);
+				if (!bounds) {
+					scheduleNext();
+					return;
+				}
+
+				const places =
+					spawnPlacesByLevelRef.current.get(currentState.level) ?? [];
+				const place = pickSpatiallyUniformPoi(places, bounds);
+				if (!place) {
+					scheduleNext();
+					return;
+				}
+
+				const incident = makeIncident(place.lat, place.lng, place);
+				setState((s) => ({
+					...s,
+					incidents: [...s.incidents, incident],
+				}));
+				void persistCreatedIncident(incident);
+				scheduleNext();
+			}, SPAWN_INTERVAL_MS);
+		};
+
+		scheduleNext();
+		return () => {
+			alive = false;
+		};
+	}, [inventorySorterOpen]);
+
+	// ── Recruit lead spawner ──────────────────────────────────────────────────
+	useEffect(() => {
+		let alive = true;
+		const MAX_RECRUITS = 3;
+		const SPAWN_INTERVAL_MS = 18_000;
+
+		const scheduleNext = () => {
+			if (!alive) return;
+			window.setTimeout(() => {
+				if (!alive) return;
+				setState((s) => {
+					if (s.recruitLeads.length >= MAX_RECRUITS) return s;
+
+					const bounds = levelBoundsRef.current.get(s.level);
+					if (!bounds) return s;
+
+					const unavailable = new Set([
+						...s.ownedVigilanteIds,
+						...s.recruitLeads.map((r) => r.vigilanteId),
+					]);
+					const available = vigilantes.filter(
+						(v) => !unavailable.has(v.id),
+					);
+					if (available.length === 0) return s;
+
+					const undercoverAvailable = available.filter(
+						(v) => v.isUndercover,
+					);
+					const normalAvailable = available.filter(
+						(v) => !v.isUndercover,
+					);
+					const undercoverAlreadyOnMap = s.recruitLeads.some((lead) => {
+						const match = vigilantes.find(
+							(v) => v.id === lead.vigilanteId,
+						);
+						return match?.isUndercover;
+					});
+
+					let chosen;
+					if (!undercoverAlreadyOnMap && undercoverAvailable.length > 0) {
+						chosen =
+							Math.random() < 0.45
+								? randomFrom(undercoverAvailable)
+								: randomFrom(
+										normalAvailable.length > 0
+											? normalAvailable
+											: available,
+								  );
+					} else {
+						chosen = randomFrom(
+							normalAvailable.length > 0 ? normalAvailable : available,
+						);
+					}
+
+					return {
+						...s,
+						recruitLeads: [
+							...s.recruitLeads,
+							makeRecruitLead(chosen.id, bounds),
+						],
+					};
+				});
 				scheduleNext();
 			}, SPAWN_INTERVAL_MS);
 		};
@@ -592,39 +1433,232 @@ export default function StreetMapScene({ saveKey }: Props) {
 		};
 	}, []);
 
+	// ── Expiry ticker ─────────────────────────────────────────────────────────
 	useEffect(() => {
+		if (inventorySorterOpen) return;
+
 		const id = window.setInterval(() => {
 			const currentState = stateRef.current;
 			const now = Date.now();
 
-			const expiredIds = currentState.incidents
+			const expiredIncidentIds = currentState.incidents
 				.filter((i) => i.status === "active" && now >= i.expiresAt)
 				.map((i) => i.id);
+			const expiredRecruitIds = currentState.recruitLeads
+				.filter((r) => now >= r.expiresAt)
+				.map((r) => r.id);
 
-			if (expiredIds.length === 0) return;
+			if (expiredIncidentIds.length === 0 && expiredRecruitIds.length === 0)
+				return;
 
-			void persistIncidentStatus(expiredIds, "failed");
+			if (expiredIncidentIds.length > 0) {
+				void persistIncidentStatus(expiredIncidentIds, "failed");
+			}
 
-			const expiredSet = new Set(expiredIds);
+			const expiredIncidentSet = new Set(expiredIncidentIds);
+			const expiredRecruitSet = new Set(expiredRecruitIds);
 
 			setState((s) => ({
 				...s,
-				selectedIncidentId: expiredSet.has(s.selectedIncidentId ?? "")
+				selectedIncidentId: expiredIncidentSet.has(s.selectedIncidentId ?? "")
 					? null
 					: s.selectedIncidentId,
-				incidents: s.incidents.filter((i) => !expiredSet.has(i.id)),
+				incidents: s.incidents.filter(
+					(i) => !expiredIncidentSet.has(i.id),
+				),
+				recruitLeads: s.recruitLeads.filter(
+					(r) => !expiredRecruitSet.has(r.id),
+				),
 			}));
+
+			if (
+				selectedRecruitLeadId &&
+				expiredRecruitSet.has(selectedRecruitLeadId)
+			) {
+				setSelectedRecruitLeadId(null);
+			}
 		}, 1_000);
 		return () => window.clearInterval(id);
-	}, []);
+	}, [inventorySorterOpen, selectedRecruitLeadId, state.recruitLeads]);
 
-	const zoomConfig = useMemo(() => {
-		const minZoom = LEVELS[LEVELS.length - 1].zoomOut;
-		const maxZoom = LEVELS[0].zoomIn;
-		const initialZoom = levelConfig(state.level).zoomOut;
-		return { minZoom, maxZoom, initialZoom };
-	}, [state.level]);
+	// ── NPC movement ──────────────────────────────────────────────────────────
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			setHelperPos(() => {
+				const moved = nudgeNearby(helperBase.lat, helperBase.lng);
+				return { lat: moved.lat, lng: moved.lng };
+			});
+		}, 9000);
+		return () => window.clearInterval(id);
+	}, [helperBase.lat, helperBase.lng]);
 
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			setDiazPos((prev) => {
+				const activeIncidents = state.incidents.filter(
+					(i) => i.status === "active",
+				);
+				if (activeIncidents.length === 0) {
+					return moveToward(
+						prev,
+						{ lat: diazBase.lat, lng: diazBase.lng },
+						0.12,
+					);
+				}
+				const nearest = activeIncidents.reduce((best, current) => {
+					const bestDist = distanceSq(prev, {
+						lat: best.lat,
+						lng: best.lng,
+					});
+					const currDist = distanceSq(prev, {
+						lat: current.lat,
+						lng: current.lng,
+					});
+					return currDist < bestDist ? current : best;
+				});
+				const movedToward = moveToward(
+					prev,
+					{ lat: nearest.lat, lng: nearest.lng },
+					0.12,
+				);
+				return pushAwayFromPoint(
+					movedToward,
+					{ lat: nearest.lat, lng: nearest.lng },
+					0.00135,
+				);
+			});
+		}, 1400);
+		return () => window.clearInterval(id);
+	}, [state.incidents, diazBase.lat, diazBase.lng]);
+
+	// ── Derived pin list ──────────────────────────────────────────────────────
+	const visibleDynamicPins = useMemo(() => {
+		const activeIncidents = state.incidents.filter(
+			(i) => i.status === "active",
+		);
+		const evanAvailable = state.recruitLeads.some(
+			(lead) => lead.vigilanteId === "familiar-face",
+		);
+
+		const helperPin: CharacterPin = {
+			id: "cit-helper",
+			name: "Helper",
+			initial: "H",
+			kind: "citizen",
+			lat: helperPos.lat,
+			lng: helperPos.lng,
+		};
+
+		const citizenTemplates = [
+			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-oldman"),
+			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-girl"),
+			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-woman"),
+		].filter(Boolean) as CharacterPin[];
+
+		const incidentCitizens: CharacterPin[] = activeIncidents
+			.slice(0, citizenTemplates.length)
+			.map((incident, idx) => {
+				const tpl = citizenTemplates[idx];
+				const near = nudgeNearPoint(incident.lat, incident.lng, 0.0018);
+				const safe = pushAwayFromPoint(
+					near,
+					{ lat: incident.lat, lng: incident.lng },
+					0.00095,
+				);
+				return { ...tpl, lat: safe.lat, lng: safe.lng };
+			});
+
+		const diazPin: CharacterPin = {
+			id: "cop-diaz",
+			name: "Officer Diaz",
+			initial: "D",
+			kind: "police",
+			lat: diazPos.lat,
+			lng: diazPos.lng,
+		};
+
+		const kimBase = STATIC_CHARACTER_BASES.find((p) => p.id === "cop-kim");
+		const chiefBase = STATIC_CHARACTER_BASES.find(
+			(p) => p.id === "chief-williams",
+		);
+		const policePins: CharacterPin[] = [
+			diazPin,
+			...(evanAvailable || !kimBase ? [] : [kimBase]),
+			...(chiefBase ? [chiefBase] : []),
+		];
+
+		const ownedRoster = vigilantes.filter((v) =>
+			state.ownedVigilanteIds.includes(v.id),
+		);
+		const ownedPins: CharacterPin[] = ownedRoster.map((v, i) => {
+			const off =
+				OWNED_VIG_MARKER_OFFSETS[i % OWNED_VIG_MARKER_OFFSETS.length];
+			return {
+				id: v.id,
+				name: v.alias,
+				initial: v.name[0]?.toUpperCase() ?? "V",
+				kind: "vigilante",
+				lat: BASE[0] + off.dLat,
+				lng: BASE[1] + off.dLng,
+			};
+		});
+
+		return [helperPin, ...incidentCitizens, ...policePins, ...ownedPins];
+	}, [
+		state.incidents,
+		state.recruitLeads,
+		state.ownedVigilanteIds,
+		helperPos,
+		diazPos,
+	]);
+
+	const zoomConfig = useMemo(
+		() => ({
+			minZoom: LEVELS[LEVELS.length - 1].zoomOut,
+			maxZoom: LEVELS[0].zoomIn,
+			initialZoom: levelConfig(state.level).zoomOut,
+		}),
+		[state.level],
+	);
+
+	const selectedRecruitLead = useMemo(
+		() =>
+			state.recruitLeads.find((r) => r.id === selectedRecruitLeadId) ??
+			null,
+		[state.recruitLeads, selectedRecruitLeadId],
+	);
+
+	const selectedRecruitVigilante = useMemo(
+		() =>
+			selectedRecruitLead
+				? (vigilantes.find(
+						(v) => v.id === selectedRecruitLead.vigilanteId,
+					) ?? null)
+				: null,
+		[selectedRecruitLead],
+	);
+
+	const selectedOwnedVigilante = useMemo(
+		() =>
+			selectedOwnedVigilanteId
+				? (vigilantes.find((v) => v.id === selectedOwnedVigilanteId) ??
+					null)
+				: null,
+		[selectedOwnedVigilanteId],
+	);
+
+	const activeDossier =
+		overlayMode === "recruit"
+			? selectedRecruitVigilante
+			: selectedOwnedVigilante;
+
+	const closeDossier = () => {
+		setSelectedRecruitLeadId(null);
+		setSelectedOwnedVigilanteId(null);
+		setShowVettingModal(false);
+	};
+
+	// ── Render ────────────────────────────────────────────────────────────────
 	return (
 		<div className="fixed inset-0">
 			<style>{`
@@ -638,10 +1672,20 @@ export default function StreetMapScene({ saveKey }: Props) {
 					transition: none !important;
 				}
 				.vigilante-leaflet { background: #05070a !important; }
-				.vigilante-incident-icon { background: none; border: none; }
-				.vigilante-police-icon { background: none; border: none; }
+				.vigilante-incident-icon,
+				.vigilante-police-icon,
+				.vigilante-character-icon,
+				.vigilante-recruit-icon { background: none; border: none; }
 				.vigilante-hide-scrollbar::-webkit-scrollbar { display: none; }
 				.vigilante-hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+				.leaflet-pane.characterPane { z-index: 700 !important; }
+				.leaflet-pane.incidentPane { z-index: 820 !important; }
+				.leaflet-pane.recruitPane { z-index: 860 !important; }
+				.vigilante-character-icon > div,
+				.vigilante-recruit-icon > div {
+					cursor: pointer !important;
+					pointer-events: auto !important;
+				}
 				@keyframes vigilante-pulse-soft {
 					0%   { box-shadow: 0 0 0 0 rgba(185,28,28,0.35); }
 					60%  { box-shadow: 0 0 0 10px rgba(185,28,28,0); }
@@ -692,7 +1736,14 @@ export default function StreetMapScene({ saveKey }: Props) {
 					updateWhenZooming
 					updateWhenIdle={false}
 				/>
-
+				<CharacterMarkers
+					pins={visibleDynamicPins}
+					onSelect={handleCharacterSelect}
+				/>
+				<RecruitMarkers
+					leads={state.recruitLeads}
+					onSelect={handleRecruitSelect}
+				/>
 				<IncidentMarkers
 					incidents={state.incidents}
 					selectedId={state.selectedIncidentId}
@@ -711,6 +1762,232 @@ export default function StreetMapScene({ saveKey }: Props) {
 				/>
 			</MapContainer>
 
+			{/* ── Dossier overlay ── */}
+			<AnimatePresence>
+				{activeDossier ? (
+					<>
+						<motion.div
+							className="absolute inset-0 z-[2000] bg-black/35"
+							initial={{ opacity: 0 }}
+							animate={{ opacity: 1 }}
+							exit={{ opacity: 0 }}
+							onClick={closeDossier}
+						/>
+						<motion.aside
+							initial={{
+								opacity: 0,
+								x: overlayMode === "owned" ? 30 : -30,
+								scale: 0.98,
+							}}
+							animate={{ opacity: 1, x: 0, scale: 1 }}
+							exit={{
+								opacity: 0,
+								x: overlayMode === "owned" ? 24 : -24,
+								scale: 0.98,
+							}}
+							transition={{ duration: 0.2, ease: "easeOut" }}
+							className={`absolute top-6 bottom-6 z-[2010] w-[min(34vw,460px)] min-w-[340px] overflow-hidden rounded-2xl border border-amber-900/40 bg-black/75 text-amber-100 shadow-[0_18px_70px_rgba(0,0,0,0.55)] backdrop-blur-md ${
+								overlayMode === "owned" ? "right-6" : "left-6"
+							}`}
+						>
+							<div className="flex h-full flex-col">
+								<div className="flex items-start justify-between border-b border-amber-900/30 px-5 py-4">
+									<div>
+										<div className="text-[11px] uppercase tracking-[0.28em] text-amber-400/70">
+											{overlayMode === "owned"
+												? "Vigilante dossier"
+												: "Recruit lead"}
+										</div>
+										<h2 className="mt-2 text-2xl font-bold text-amber-100">
+											{activeDossier.alias}
+										</h2>
+										<div className="mt-1 text-sm text-amber-200/60">
+											{activeDossier.name} •{" "}
+											{activeDossier.role}
+										</div>
+									</div>
+									<button
+										type="button"
+										onClick={closeDossier}
+										className="rounded-lg border border-amber-900/35 bg-black/30 p-2 text-amber-200/70 hover:bg-amber-950/20 hover:text-amber-100 transition"
+									>
+										<X className="h-4 w-4" />
+									</button>
+								</div>
+
+								<div className="flex-1 overflow-y-auto vigilante-hide-scrollbar px-5 py-4">
+									<div className="grid grid-cols-[108px_1fr] gap-4">
+										<div className="relative h-[140px] overflow-hidden rounded-xl border border-amber-900/35 bg-black/35">
+											<Image
+												src={activeDossier.portrait}
+												alt={activeDossier.alias}
+												fill
+												className="object-cover"
+												sizes="140px"
+											/>
+										</div>
+										<div className="space-y-3">
+											<div className="flex flex-wrap gap-2">
+												{activeDossier.status ? (
+													<span className="rounded-full border border-amber-900/35 bg-black/30 px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-amber-200/75">
+														{activeDossier.status}
+													</span>
+												) : null}
+												{typeof activeDossier.heat ===
+												"number" ? (
+													<span className="rounded-full border border-red-900/35 bg-red-950/20 px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-red-300/75">
+														Heat{" "}
+														{activeDossier.heat}
+													</span>
+												) : null}
+											</div>
+											<p className="text-sm leading-6 text-amber-100/75">
+												{activeDossier.bio ??
+													"Backstory TBD."}
+											</p>
+										</div>
+									</div>
+
+									<div className="mt-6 grid grid-cols-2 gap-3">
+										{(
+											[
+												"combat",
+												"stealth",
+												"tactics",
+												"nerve",
+											] as const
+										).map((stat) => (
+											<div
+												key={stat}
+												className="rounded-xl border border-amber-900/30 bg-black/25 p-3"
+											>
+												<div className="text-[11px] uppercase tracking-[0.2em] text-amber-400/70">
+													{stat}
+												</div>
+												<div className="mt-2 text-lg font-bold">
+													{activeDossier.stats[stat]}
+												</div>
+											</div>
+										))}
+									</div>
+
+									<div className="mt-6 rounded-xl border border-amber-900/30 bg-black/25 p-4">
+										<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
+											Traits
+										</div>
+										<div className="mt-3 flex flex-wrap gap-2">
+											{(activeDossier.traits ?? []).map(
+												(trait: string) => (
+													<span
+														key={trait}
+														className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
+													>
+														{trait}
+													</span>
+												),
+											)}
+										</div>
+									</div>
+								</div>
+
+								<div className="border-t border-amber-900/30 px-5 py-4">
+									<div className="flex items-center justify-between gap-3">
+										<button
+											type="button"
+											onClick={closeDossier}
+											className="rounded-xl border border-amber-900/35 bg-black/30 px-4 py-3 text-sm text-amber-200/80 hover:bg-amber-950/20 transition"
+										>
+											Close file
+										</button>
+										{overlayMode === "recruit" ? (
+											<button
+												type="button"
+												onClick={() =>
+													setShowVettingModal(true)
+												}
+												className="rounded-xl border border-amber-700/40 bg-amber-950/30 px-5 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-900/35 transition"
+											>
+												Hire vigilante
+											</button>
+										) : null}
+									</div>
+								</div>
+							</div>
+						</motion.aside>
+					</>
+				) : null}
+			</AnimatePresence>
+
+			{/* ── NPC dialogue ── */}
+			<AnimatePresence>
+				{dialogue ? (
+					<motion.div
+						initial={{ opacity: 0, y: 16 }}
+						animate={{ opacity: 1, y: 0 }}
+						exit={{ opacity: 0, y: 10 }}
+						transition={{ duration: 0.2, ease: "easeOut" }}
+						className="absolute bottom-6 left-6 z-[2020] w-[min(52vw,720px)] min-w-[320px]"
+					>
+						<div className="overflow-hidden rounded-2xl border border-amber-900/40 bg-black/75 shadow-[0_18px_70px_rgba(0,0,0,0.55)] backdrop-blur-md">
+							<div className="flex items-start">
+								<div className="shrink-0 border-r border-amber-900/30 bg-black/30 p-4">
+									<div className="relative h-[170px] w-[132px] overflow-hidden rounded-md">
+										<Image
+											src={dialogue.portrait}
+											alt={dialogue.name}
+											fill
+											className="object-cover object-center"
+											sizes="132px"
+										/>
+									</div>
+								</div>
+								<div className="flex min-h-[202px] flex-1 flex-col justify-between px-5 py-4">
+									<div>
+										<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
+											{dialogue.role}
+										</div>
+										<div className="mt-1 text-xl font-bold text-amber-100">
+											{dialogue.name}
+										</div>
+										<p className="mt-4 text-sm leading-7 text-amber-100/80">
+											{dialogue.text}
+										</p>
+									</div>
+									<div className="mt-4 flex items-center justify-end gap-3">
+										<button
+											type="button"
+											onClick={() => setDialogue(null)}
+											className="rounded-xl border border-amber-700/40 bg-amber-950/30 px-4 py-2.5 text-sm font-semibold text-amber-100 hover:bg-amber-900/35 transition"
+										>
+											Continue
+										</button>
+									</div>
+								</div>
+							</div>
+						</div>
+					</motion.div>
+				) : null}
+			</AnimatePresence>
+
+			<VettingMinigameModal
+				open={
+					showVettingModal &&
+					overlayMode === "recruit" &&
+					!!selectedRecruitVigilante
+				}
+				character={selectedRecruitVigilante}
+				onClose={() => setShowVettingModal(false)}
+				onReject={() => {
+					setShowVettingModal(false);
+					setSelectedRecruitLeadId(null);
+				}}
+				onApprove={() => {
+					setShowVettingModal(false);
+					handleHireSelected();
+				}}
+			/>
+
+			{/* ── Top bar ── */}
 			<div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] flex justify-center pt-4">
 				<div className="pointer-events-auto inline-flex items-center gap-3 rounded-xl border border-amber-900/40 bg-black/40 backdrop-blur-md px-4 py-3 text-amber-200/70">
 					<div className="text-[11px] uppercase tracking-[0.22em] text-amber-400/70">
@@ -736,6 +2013,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 				</div>
 			</div>
 
+			{/* ── Left incident panel ── */}
 			<div className="pointer-events-none absolute inset-y-16 left-0 z-[950] flex items-start">
 				<div className="pointer-events-auto mt-4">
 					<button
@@ -777,15 +2055,16 @@ export default function StreetMapScene({ saveKey }: Props) {
 								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
 									Incidents
 								</div>
-								<div className="flex text-[11px] gap-2 items-center" />
 							</div>
 
 							<div className="relative flex-1 max-h-72 overflow-y-auto px-3 py-2 space-y-2 vigilante-hide-scrollbar">
 								{state.incidents
 									.filter((i) => i.status === "active")
 									.sort((a, b) => {
-										if (a.id === state.selectedIncidentId) return -1;
-										if (b.id === state.selectedIncidentId) return 1;
+									if (a.id === state.selectedIncidentId)
+										return -1;
+									if (b.id === state.selectedIncidentId)
+										return 1;
 										return a.expiresAt - b.expiresAt;
 									})
 									.map((inc) => {
@@ -810,11 +2089,9 @@ export default function StreetMapScene({ saveKey }: Props) {
 													</div>
 													<div className="flex-1">
 														<div className="font-semibold text-[11px] uppercase tracking-[0.16em]">
-															{incidentCategoryLabel(
-																inc.category,
-															)}
+															{inc.typeLabel}
 														</div>
-														<div className="mt-1 text-[11px] text-amber-200/70 line-clamp-2">
+														<div className="mt-1 text-[11px] text-amber-200/70 leading-snug">
 															{inc.summary}
 														</div>
 														<TimerBar
@@ -943,6 +2220,166 @@ export default function StreetMapScene({ saveKey }: Props) {
 									More police responses below – scroll to view.
 								</div>
 							)}
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</div>
+
+			{/* ── Left minigame panel + toggle ── */}
+			<div className="fixed left-0 flex items-start" style={{ top: 160, zIndex: 2000 }}>
+				<div className="pointer-events-auto">
+					<button
+						type="button"
+						onClick={() =>
+							setState((s) => ({
+								...s,
+								showMinigamePanel: !s.showMinigamePanel,
+							}))
+						}
+						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
+					>
+						<span>Minigames</span>
+						<span className="text-[11px] flex items-center">
+							{state.showMinigamePanel ? (
+								<ChevronLeft className="w-3 h-3" aria-hidden />
+							) : (
+								<ChevronRight className="w-3 h-3" aria-hidden />
+							)}
+						</span>
+					</button>
+				</div>
+
+				<AnimatePresence initial={false}>
+					{state.showMinigamePanel && (
+						<motion.div
+							key="minigame-panel"
+							initial={{ x: -320, opacity: 0 }}
+							animate={{ x: 0, opacity: 1 }}
+							exit={{ x: -320, opacity: 0 }}
+							transition={{
+								type: "tween",
+								duration: 0.22,
+								ease: "easeOut",
+							}}
+							className="pointer-events-auto ml-2 w-80 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
+						>
+							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
+								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
+									Minigames
+								</div>
+							</div>
+
+							<div className="px-3 py-2 space-y-2">
+								{MINIGAME_OPTIONS.map((game) => (
+									<button
+										key={game.id}
+										type="button"
+										onClick={() => {
+											if (game.id === "inventory-sorter") {
+												setInventorySorterOpen(true);
+											}
+										}}
+										className="w-full text-left rounded-lg border border-amber-900/50 bg-black/40 px-3 py-3 text-xs text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100 transition-colors cursor-pointer"
+									>
+										<div className="flex items-start gap-3">
+											<div className="mt-0.5 h-8 w-8 rounded-lg border border-amber-800/60 bg-amber-950/30 flex items-center justify-center text-amber-300">
+												<Package2 className="w-4 h-4" aria-hidden />
+											</div>
+											<div className="flex-1">
+												<div className="flex items-center justify-between gap-2">
+													<div className="font-semibold text-[11px] uppercase tracking-[0.16em]">
+														{game.title}
+													</div>
+													{game.status && (
+														<div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/60">
+															{game.status}
+														</div>
+													)}
+												</div>
+												<div className="mt-1 text-[11px] text-amber-200/60 line-clamp-2">
+													{game.description}
+												</div>
+											</div>
+										</div>
+									</button>
+								))}
+
+								<div className="rounded-lg border border-dashed border-amber-900/40 bg-black/20 px-3 py-3 text-[11px] text-amber-200/35">
+									More minigames can be added here later.
+								</div>
+							</div>
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</div>
+			<InventorySorterModal
+				open={inventorySorterOpen}
+				onClose={() => setInventorySorterOpen(false)}
+				onWin={(reward) => {
+					console.log("Inventory Sorter reward:", reward);
+					setInventorySorterOpen(false);
+				}}
+			/>
+
+			{/* ── Bottom inventory panel ── */}
+			<div className="pointer-events-none absolute inset-x-0 bottom-0 z-[980] max-h-[min(92vh,100%)] overflow-hidden">
+				<AnimatePresence initial={false} mode="wait">
+					{state.showInventoryPanel ? (
+						<motion.div
+							key="inventory-panel"
+							initial={{ y: "100%" }}
+							animate={{ y: 0 }}
+							exit={{ y: "100%" }}
+							transition={{
+								type: "tween",
+								duration: 0.48,
+								ease: [0.22, 0.9, 0.28, 1],
+							}}
+							style={{ transformOrigin: "bottom center" }}
+							className="pointer-events-none w-full transform-gpu will-change-transform"
+						>
+							<Inventory
+								onHide={() =>
+									setState((s) => ({
+										...s,
+										showInventoryPanel: false,
+									}))
+								}
+							/>
+						</motion.div>
+					) : (
+						<motion.div
+							key="inventory-collapsed"
+							initial={{ y: "100%" }}
+							animate={{ y: 0 }}
+							exit={{ y: "100%" }}
+							transition={{
+								type: "tween",
+								duration: 0.38,
+								ease: [0.22, 0.9, 0.28, 1],
+							}}
+							style={{ transformOrigin: "bottom center" }}
+							className="pointer-events-auto w-full transform-gpu will-change-transform border-t border-amber-900/55 bg-black/80 px-4 py-2.5 backdrop-blur-md"
+						>
+							<button
+								type="button"
+								onClick={() =>
+									setState((s) => ({
+										...s,
+										showInventoryPanel: true,
+									}))
+								}
+								className="flex w-full cursor-pointer items-center justify-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-200/75 transition-colors hover:text-amber-100"
+								aria-expanded={false}
+								aria-label="Show inventory"
+							>
+								<span>Show inventory</span>
+								<ChevronUp
+									className="h-4 w-4 shrink-0"
+									strokeWidth={2.25}
+									aria-hidden
+								/>
+							</button>
 						</motion.div>
 					)}
 				</AnimatePresence>
