@@ -926,7 +926,9 @@ export default function StreetMapScene({ saveKey }: Props) {
 	const spawnPlacesByLevelRef = useRef<Map<number, OsmPlace[]>>(new Map());
 	/** Incremented per level on each new bounds+fetch so stale responses are ignored. */
 	const placesFetchGenRef = useRef<Map<number, number>>(new Map());
-	const placesAbortByLevelRef = useRef<Map<number, AbortController>>(new Map());
+	const placesAbortByLevelRef = useRef<Map<number, AbortController>>(
+		new Map(),
+	);
 
 	useEffect(() => {
 		setState(loadState(saveKey));
@@ -965,9 +967,9 @@ export default function StreetMapScene({ saveKey }: Props) {
 			})
 				.then(async (r) => {
 					if (placesFetchGenRef.current.get(level) !== gen) return;
-					const data = (r.ok
-						? await r.json()
-						: { places: [] }) as { places?: OsmPlace[] };
+					const data = (r.ok ? await r.json() : { places: [] }) as {
+						places?: OsmPlace[];
+					};
 					if (placesFetchGenRef.current.get(level) !== gen) return;
 					spawnPlacesByLevelRef.current.set(
 						level,
