@@ -5,6 +5,12 @@ import { useRouter } from "next/navigation";
 import { X, Copy, Loader2 } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { listSlots, readSave, writeNewSave, type SaveSlotId } from "../../lib/saves";
+import {
+	createMultiplayerSession,
+	addPlayerToSession,
+	getSessionByJoinCode,
+	getSessionPlayers,
+} from "../../lib/multiplayer";
 
 export type MultiplayerTab = "load" | "create" | "join";
 
@@ -34,6 +40,7 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 	const [loading, setLoading] = useState(false);
 	const [selectedSlot, setSelectedSlot] = useState<SaveSlotId | null>(null);
 	const [tick, setTick] = useState(0);
+	const [errorMessage, setErrorMessage] = useState("");
 
 	useEffect(() => {
 		if (open) {
@@ -44,6 +51,7 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 			setGeneratedCode("");
 			setCopied(false);
 			setLoading(false);
+			setErrorMessage("");
 		}
 	}, [open]);
 
@@ -80,23 +88,81 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 	const startFromSlot = (slot: SaveSlotId) => {
 		if (!isSignedIn) return;
 		ensureSlot(slot);
-		router.push(`/play/multiplayer?mode=load&scope=${slot.scope}&slot=${slot.index}`);
-		onClose();
+		setSelectedSlot(slot);
+		setTab("create");
+		setErrorMessage("Select this save and generate a code to create a multiplayer session.");
 	};
 
-	const createGame = () => {
-		if (!isSignedIn || !selectedSlot) return;
-		ensureSlot(selectedSlot);
-		router.push(
-			`/play/multiplayer?mode=create&scope=${selectedSlot.scope}&slot=${selectedSlot.index}&code=${generatedCode || ""}`
-		);
-		onClose();
+	const createGame = async () => {
+		if (!isSignedIn || !selectedSlot || !user) return;
+		if (!generatedCode) {
+			setErrorMessage("Generate a join code first.");
+			return;
+		}
+
+		try {
+			setLoading(true);
+			setErrorMessage("");
+
+			ensureSlot(selectedSlot);
+
+			const session = await createMultiplayerSession({
+				joinCode: generatedCode,
+				hostUserId: user.id,
+				saveScope: selectedSlot.scope,
+				saveSlot: selectedSlot.index,
+			});
+
+			await addPlayerToSession(session.id, user.id, true);
+
+			router.push(
+				`/play/multiplayer?mode=create&sessionId=${session.id}&code=${generatedCode}`
+			);
+			onClose();
+		} catch (error) {
+			console.error("Failed to create multiplayer session:", error);
+			setErrorMessage("Could not create multiplayer session. Try another code.");
+		} finally {
+			setLoading(false);
+		}
 	};
 
-	const joinGame = () => {
-		if (!isSignedIn || joinCode.length !== 6) return;
-		router.push(`/play/multiplayer?mode=join&code=${joinCode}`);
-		onClose();
+	const joinGame = async () => {
+		if (!isSignedIn || joinCode.length !== 6 || !user) return;
+
+		try {
+			setLoading(true);
+			setErrorMessage("");
+
+			const session = await getSessionByJoinCode(joinCode);
+
+			if (!session) {
+				setErrorMessage("No multiplayer session found for that code.");
+				return;
+			}
+
+			const existingPlayers = await getSessionPlayers(session.id);
+
+			const alreadyJoined = existingPlayers.some((player) => player.user_id === user.id);
+			const isFull = existingPlayers.length >= 2 && !alreadyJoined;
+
+			if (isFull) {
+				setErrorMessage("That multiplayer session is already full.");
+				return;
+			}
+
+			if (!alreadyJoined) {
+				await addPlayerToSession(session.id, user.id, false);
+			}
+
+			router.push(`/play/multiplayer?mode=join&sessionId=${session.id}&code=${joinCode}`);
+			onClose();
+		} catch (error) {
+			console.error("Failed to join multiplayer session:", error);
+			setErrorMessage("Could not join multiplayer session.");
+		} finally {
+			setLoading(false);
+		}
 	};
 
 	return (
@@ -130,7 +196,10 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 						<button
 							key={t}
 							type="button"
-							onClick={() => setTab(t)}
+							onClick={() => {
+								setTab(t);
+								setErrorMessage("");
+							}}
 							className={`flex-1 py-3 text-sm font-medium capitalize transition-colors ${
 								tab === t
 									? "text-amber-400 border-b-2 border-amber-500 bg-amber-950/20"
@@ -143,6 +212,12 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 				</div>
 
 				<div className="p-5 space-y-4">
+					{errorMessage && (
+						<div className="rounded-lg border border-red-900/40 bg-red-950/20 px-3 py-2 text-sm text-red-300">
+							{errorMessage}
+						</div>
+					)}
+
 					{tab === "load" && (
 						<>
 							<p className="text-sm text-amber-200/70">Choose a save to continue in multiplayer.</p>
@@ -201,7 +276,7 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 								onClick={() => selectedSlot && startFromSlot(selectedSlot)}
 								className="w-full py-3 rounded-lg border border-amber-700/50 bg-amber-950/30 text-amber-200 font-medium hover:bg-amber-900/40 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 							>
-								Continue
+								Use selected save
 							</button>
 						</>
 					)}

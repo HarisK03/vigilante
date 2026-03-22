@@ -11,6 +11,16 @@ import * as L from "leaflet";
 import Inventory from "./Inventory";
 import { vigilantes } from "@/app/components/data/vigilante";
 import VettingMinigameModal from "@/components/game/VettingMinigameModal";
+import {
+	getSessionMarkers,
+	insertSessionMarker,
+	deleteSessionMarkerByMarkerId,
+	subscribeToSessionMarkers,
+	getSessionById,
+	addAssignedResourceToMarker,
+} from "../../lib/multiplayer";
+import type { AssignedResource } from "../../lib/gameTypes";
+import { getSupabaseBrowserClient } from "../../lib/supabaseClient";
 
 if (typeof window !== "undefined") {
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -37,7 +47,9 @@ if (typeof window !== "undefined") {
 }
 
 type Props = {
-	saveKey: string;
+	saveKey?: string;
+	mode?: "singleplayer" | "multiplayer";
+	sessionId?: number;
 };
 
 type IncidentCategory = "fire" | "robbery" | "medical";
@@ -54,6 +66,7 @@ type Incident = {
 	createdAt: number;
 	expiresAt: number;
 	successChance: number;
+	assignedResources: AssignedResource[];
 };
 
 type CharacterKind = "vigilante" | "citizen" | "police";
@@ -115,6 +128,7 @@ const MINIGAME_OPTIONS: MinigameOption[] = [
 		status: "Available",
 	},
 ];
+const RESOURCE_OPTIONS = ["Fire Truck", "Medic Kit", "Vigilante"];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -342,6 +356,7 @@ function makeIncident(lat: number, lng: number): Incident {
 		createdAt: now,
 		expiresAt: now + lifetimeMs,
 		successChance: computeSuccessChance(category, lifetimeMs),
+		assignedResources: [],
 	};
 }
 
@@ -763,9 +778,14 @@ function saveState(saveKey: string, state: GameState) {
 	localStorage.setItem(saveKey, JSON.stringify(state));
 }
 
-export default function StreetMapScene({ saveKey }: Props) {
+export default function StreetMapScene({
+										   saveKey,
+										   mode = "singleplayer",
+										   sessionId,
+									   }: Props) {
 	const [state, setState] = useState<GameState>(() => initialState());
 	const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
+	const [isHost, setIsHost] = useState(false);
 
 	const [selectedRecruitLeadId, setSelectedRecruitLeadId] = useState<string | null>(null);
 	const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<string | null>(null);
@@ -791,12 +811,86 @@ export default function StreetMapScene({ saveKey }: Props) {
 	});
 
 	useEffect(() => {
-		setState(loadState(saveKey));
-	}, [saveKey]);
+		if (mode !== "multiplayer" || !sessionId) return;
+
+		let active = true;
+
+		const loadMarkers = async () => {
+			try {
+				const rows = await getSessionMarkers(sessionId);
+				if (!active) return;
+
+				const incidents = rows.map((row) => ({
+					id: row.marker_id,
+					category: row.kind === "theft" ? "robbery" : row.kind === "hire" ? "medical" : "fire",
+					status: row.status === "active" ? "active" : "resolved",
+					lat: row.x,
+					lng: row.y,
+					title: row.title,
+					summary: row.details,
+					createdAt: new Date(row.created_at).getTime(),
+					expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : Date.now() + 30000,
+					successChance: 75,
+					assignedResources: row.assigned_resources ?? [],
+				}));
+
+				setState((prev) => ({
+					...prev,
+					incidents,
+				}));
+			} catch (error) {
+				console.error("Failed to load multiplayer markers:", error);
+			}
+		};
+
+		// Initial load
+		loadMarkers();
+
+		// Subscribe to realtime marker updates
+		const unsubscribe = subscribeToSessionMarkers(
+			sessionId,
+			loadMarkers
+		);
+
+		return () => {
+			active = false;
+			unsubscribe();
+		};
+	}, [mode, sessionId]);
 
 	useEffect(() => {
+		if (mode !== "multiplayer" || !sessionId) return;
+
+		const checkHost = async () => {
+			try {
+				const session = await getSessionById(sessionId);
+				const supabase = getSupabaseBrowserClient();
+				const { data } = await supabase.auth.getUser();
+				const user = data?.user;
+
+				if (session && user && session.host_user_id === user.id) {
+					setIsHost(true);
+				} else {
+					setIsHost(false);
+				}
+			} catch (error) {
+				console.error("Failed to determine host:", error);
+				setIsHost(false);
+			}
+		};
+
+		void checkHost();
+	}, [mode, sessionId]);
+
+	useEffect(() => {
+		if (mode !== "singleplayer" || !saveKey) return;
+		setState(loadState(saveKey));
+	}, [mode, saveKey]);
+
+	useEffect(() => {
+		if (mode !== "singleplayer" || !saveKey) return;
 		saveState(saveKey, state);
-	}, [saveKey, state]);
+	}, [mode, saveKey, state]);
 
 	const levelBoundsRef = useRef<Map<number, LatLngBounds>>(new Map());
 
@@ -804,13 +898,59 @@ export default function StreetMapScene({ saveKey }: Props) {
 		levelBoundsRef.current.set(level, bounds);
 	};
 
-	const expireIncident = (id: string) => {
+	const expireIncident = async (id: string) => {
+		if (mode === "multiplayer" && sessionId) {
+			await deleteSessionMarkerByMarkerId(sessionId, id);
+			return;
+		}
+
 		setState((s) => ({
 			...s,
 			selectedIncidentId:
 				s.selectedIncidentId === id ? null : s.selectedIncidentId,
 			incidents: s.incidents.filter((i) => i.id !== id),
 		}));
+	};
+
+	const handleSendResource = async (incidentId: string, resource: string) => {
+		try {
+			if (mode === "multiplayer" && sessionId) {
+				const supabase = getSupabaseBrowserClient();
+				const { data } = await supabase.auth.getUser();
+				const user = data?.user;
+
+				if (!user) return;
+
+				await addAssignedResourceToMarker(
+					sessionId,
+					incidentId,
+					resource,
+					user.id,
+				);
+				return;
+			}
+
+			setState((s) => ({
+				...s,
+				incidents: s.incidents.map((incident) =>
+					incident.id === incidentId
+						? {
+							...incident,
+							assignedResources: [
+								...incident.assignedResources,
+								{
+									playerId: "local-player",
+									resource,
+									assignedAt: new Date().toISOString(),
+								},
+							],
+						}
+						: incident,
+				),
+			}));
+		} catch (error) {
+			console.error("Failed to send resource to incident:", error);
+		}
 	};
 
 	const handleIncidentSelect = (id: string) => {
@@ -950,6 +1090,11 @@ export default function StreetMapScene({ saveKey }: Props) {
 			if (!alive) return;
 			window.setTimeout(() => {
 				if (!alive) return;
+				if (mode === "multiplayer" && !isHost) {
+					scheduleNext();
+					return;
+				}
+
 				setState((s) => {
 					const activeCount = s.incidents.filter(
 						(i) => i.status === "active",
@@ -965,9 +1110,27 @@ export default function StreetMapScene({ saveKey }: Props) {
 					if (!bounds) return s;
 
 					const { lat, lng } = sampleInBounds(bounds);
+					const newIncident = makeIncident(lat, lng);
+
+					if (mode === "multiplayer" && sessionId) {
+						void insertSessionMarker({
+							sessionId,
+							markerId: newIncident.id,
+							kind: "incident",
+							x: newIncident.lat,
+							y: newIncident.lng,
+							title: newIncident.title,
+							details: newIncident.summary,
+							createdAt: new Date(newIncident.createdAt).toISOString(),
+							expiresAt: new Date(newIncident.expiresAt).toISOString(),
+							status: "active",
+						});
+						return s;
+					}
+
 					return {
 						...s,
-						incidents: [...s.incidents, makeIncident(lat, lng)],
+						incidents: [...s.incidents, newIncident],
 					};
 				});
 				scheduleNext();
@@ -978,7 +1141,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 		return () => {
 			alive = false;
 		};
-	}, [inventorySorterOpen]);
+	}, [inventorySorterOpen, mode, isHost, sessionId]);
 
 	useEffect(() => {
 		let alive = true;
@@ -1053,9 +1216,28 @@ export default function StreetMapScene({ saveKey }: Props) {
 		if (inventorySorterOpen) return;
 
 		const id = window.setInterval(() => {
-			setState((s) => {
-				const now = Date.now();
+			const now = Date.now();
 
+			if (mode === "multiplayer" && sessionId) {
+				const expiredIds = state.incidents
+					.filter((i) => i.status === "active" && now >= i.expiresAt)
+					.map((i) => i.id);
+
+				expiredIds.forEach((incidentId) => {
+					void deleteSessionMarkerByMarkerId(sessionId, incidentId);
+				});
+
+				if (
+					selectedRecruitLeadId &&
+					!state.recruitLeads.some((r) => r.id === selectedRecruitLeadId)
+				) {
+					setSelectedRecruitLeadId(null);
+				}
+
+				return;
+			}
+
+			setState((s) => {
 				const expiredIncidentIds = new Set(
 					s.incidents
 						.filter((i) => i.status === "active" && now >= i.expiresAt)
@@ -1087,7 +1269,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 		}, 1_000);
 
 		return () => window.clearInterval(id);
-	}, [inventorySorterOpen, selectedRecruitLeadId, state.recruitLeads]);
+	}, [inventorySorterOpen, selectedRecruitLeadId, state.recruitLeads, state.incidents, mode, sessionId]);
 
 	useEffect(() => {
 		const id = window.setInterval(() => {
@@ -1714,6 +1896,46 @@ export default function StreetMapScene({ saveKey }: Props) {
 															expiresAt={inc.expiresAt}
 															onExpire={() => expireIncident(inc.id)}
 														/>
+														{isSelected && (
+															<div className="mt-3 space-y-2">
+																<div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/70">
+																	Assigned Resources
+																</div>
+
+																<div className="flex flex-wrap gap-2">
+																	{inc.assignedResources.length === 0 ? (
+																		<span className="text-[10px] text-amber-200/45">
+																			No resources assigned yet.
+																		</span>
+																	) : (
+																		inc.assignedResources.map((assignment, idx) => (
+																			<span
+																				key={`${assignment.playerId}-${assignment.resource}-${assignment.assignedAt}-${idx}`}
+																				className="rounded-full border border-amber-900/35 bg-black/30 px-2 py-1 text-[10px] text-amber-100/80"
+																			>
+																				{assignment.resource}
+																			</span>
+																		))
+																	)}
+																</div>
+
+																<div className="grid grid-cols-1 gap-2">
+																	{RESOURCE_OPTIONS.map((resource) => (
+																		<button
+																			key={resource}
+																			type="button"
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				void handleSendResource(inc.id, resource);
+																			}}
+																			className="rounded-md border border-amber-700/50 bg-amber-950/25 px-2 py-1.5 text-[10px] uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-900/35 transition-colors"
+																		>
+																			Send {resource}
+																		</button>
+																	))}
+																</div>
+															</div>
+														)}
 													</div>
 												</div>
 											</button>
