@@ -9,7 +9,8 @@ import React, {
 } from "react";
 import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronLeft, ChevronRight, ChevronUp, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronUp, Home, Package2, X } from "lucide-react";
+import InventorySorterModal from "../minigames/InventorySorterModal";
 import type { LatLngBounds, LatLngTuple } from "leaflet";
 import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
@@ -142,6 +143,7 @@ type GameState = {
 	selectedIncidentId: string | null;
 	incidents: Incident[];
 	showIncidentPanel: boolean;
+	showMinigamePanel: boolean;
 	showInventoryPanel: boolean;
 	ownedVigilanteIds: string[];
 	recruitLeads: RecruitLead[];
@@ -165,6 +167,27 @@ const LEVELS = [
 	{ id: 3, label: "L3", zoomOut: 13, zoomIn: 13 },
 ];
 
+type MinigameId = "inventory-sorter";
+
+type MinigameOption = {
+	id: MinigameId;
+	title: string;
+	description: string;
+	status?: string;
+};
+
+const MINIGAME_OPTIONS: MinigameOption[] = [
+	{
+		id: "inventory-sorter",
+		title: "Inventory Sorter",
+		description: "Reorganize emergency supplies to earn extra resources.",
+		status: "Available",
+	},
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 const STATIC_CHARACTER_BASES: CharacterPin[] = [
 	{
 		id: "cit-oldman",
@@ -843,6 +866,7 @@ function initialState(): GameState {
 		selectedIncidentId: null,
 		incidents: [],
 		showIncidentPanel: true,
+		showMinigamePanel: false,
 		showInventoryPanel: true,
 		ownedVigilanteIds: ["bruce", "parya"],
 		recruitLeads: [],
@@ -872,6 +896,10 @@ function loadState(saveKey: string): GameState {
 				typeof p.showIncidentPanel === "boolean"
 					? p.showIncidentPanel
 					: true,
+			showMinigamePanel:
+				typeof p.showMinigamePanel === "boolean"
+					? p.showMinigamePanel
+					: false,
 			showInventoryPanel:
 				typeof p.showInventoryPanel === "boolean"
 					? p.showInventoryPanel
@@ -902,6 +930,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 	const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<
 		string | null
 	>(null);
+	const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
 	const [overlayMode, setOverlayMode] = useState<OverlayMode>("recruit");
 	const [dialogue, setDialogue] = useState<DialogueState>(null);
 	const [showVettingModal, setShowVettingModal] = useState(false);
@@ -1112,6 +1141,8 @@ export default function StreetMapScene({ saveKey }: Props) {
 
 	// ── Incident spawner — random POI, no grid ────────────────────────────────
 	useEffect(() => {
+		if (inventorySorterOpen) return;
+
 		let alive = true;
 		const MAX_ACTIVE = 100;
 		const SPAWN_INTERVAL_MS = 1_000;
@@ -1150,7 +1181,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 		return () => {
 			alive = false;
 		};
-	}, []);
+	}, [inventorySorterOpen]);
 
 	// ── Recruit lead spawner ──────────────────────────────────────────────────
 	useEffect(() => {
@@ -1233,6 +1264,8 @@ export default function StreetMapScene({ saveKey }: Props) {
 
 	// ── Expiry ticker ─────────────────────────────────────────────────────────
 	useEffect(() => {
+		if (inventorySorterOpen) return;
+
 		const id = window.setInterval(() => {
 			setState((s) => {
 				const now = Date.now();
@@ -1276,7 +1309,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 			}
 		}, 1_000);
 		return () => window.clearInterval(id);
-	}, [selectedRecruitLeadId, state.recruitLeads]);
+	}, [inventorySorterOpen, selectedRecruitLeadId, state.recruitLeads]);
 
 	// ── NPC movement ──────────────────────────────────────────────────────────
 	useEffect(() => {
@@ -1785,11 +1818,10 @@ export default function StreetMapScene({ saveKey }: Props) {
 								onClick={() =>
 									setState((s) => ({ ...s, level: lvl.id }))
 								}
-								className={`px-3 py-1 rounded-md border cursor-pointer ${
-									state.level === lvl.id
+								className={`px-3 py-1 rounded-md border cursor-pointer ${state.level === lvl.id
 										? "border-amber-500/70 bg-amber-900/40 text-amber-100"
 										: "border-amber-900/50 bg-black/30 text-amber-200/60 hover:border-amber-700/60 hover:text-amber-100"
-								}`}
+									}`}
 							>
 								{lvl.label}
 							</button>
@@ -1914,13 +1946,109 @@ export default function StreetMapScene({ saveKey }: Props) {
 								(i) => i.status === "active",
 							).length > 3 && (
 								<div className="px-3 pt-2 pb-3 text-[10px] text-amber-200/50">
-									More incidents below – scroll to view.
+									More incidents below - scroll to view.
 								</div>
 							)}
 						</motion.div>
 					)}
 				</AnimatePresence>
 			</div>
+
+			{/* ── Left minigame panel + toggle ── */}
+			<div className="fixed left-0 flex items-start" style={{ top: 160, zIndex: 2000 }}>
+				<div className="pointer-events-auto">
+					<button
+						type="button"
+						onClick={() =>
+							setState((s) => ({
+								...s,
+								showMinigamePanel: !s.showMinigamePanel,
+							}))
+						}
+						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
+					>
+						<span>Minigames</span>
+						<span className="text-[11px] flex items-center">
+							{state.showMinigamePanel ? (
+								<ChevronLeft className="w-3 h-3" aria-hidden />
+							) : (
+								<ChevronRight className="w-3 h-3" aria-hidden />
+							)}
+						</span>
+					</button>
+				</div>
+
+				<AnimatePresence initial={false}>
+					{state.showMinigamePanel && (
+						<motion.div
+							key="minigame-panel"
+							initial={{ x: -320, opacity: 0 }}
+							animate={{ x: 0, opacity: 1 }}
+							exit={{ x: -320, opacity: 0 }}
+							transition={{
+								type: "tween",
+								duration: 0.22,
+								ease: "easeOut",
+							}}
+							className="pointer-events-auto ml-2 w-80 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
+						>
+							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
+								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
+									Minigames
+								</div>
+							</div>
+
+							<div className="px-3 py-2 space-y-2">
+								{MINIGAME_OPTIONS.map((game) => (
+									<button
+										key={game.id}
+										type="button"
+										onClick={() => {
+											if (game.id === "inventory-sorter") {
+												setInventorySorterOpen(true);
+											}
+										}}
+										className="w-full text-left rounded-lg border border-amber-900/50 bg-black/40 px-3 py-3 text-xs text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100 transition-colors cursor-pointer"
+									>
+										<div className="flex items-start gap-3">
+											<div className="mt-0.5 h-8 w-8 rounded-lg border border-amber-800/60 bg-amber-950/30 flex items-center justify-center text-amber-300">
+												<Package2 className="w-4 h-4" aria-hidden />
+											</div>
+											<div className="flex-1">
+												<div className="flex items-center justify-between gap-2">
+													<div className="font-semibold text-[11px] uppercase tracking-[0.16em]">
+														{game.title}
+													</div>
+													{game.status && (
+														<div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/60">
+															{game.status}
+														</div>
+													)}
+												</div>
+												<div className="mt-1 text-[11px] text-amber-200/60 line-clamp-2">
+													{game.description}
+												</div>
+											</div>
+										</div>
+									</button>
+								))}
+
+								<div className="rounded-lg border border-dashed border-amber-900/40 bg-black/20 px-3 py-3 text-[11px] text-amber-200/35">
+									More minigames can be added here later.
+								</div>
+							</div>
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</div>
+			<InventorySorterModal
+				open={inventorySorterOpen}
+				onClose={() => setInventorySorterOpen(false)}
+				onWin={(reward) => {
+					console.log("Inventory Sorter reward:", reward);
+					setInventorySorterOpen(false);
+				}}
+			/>
 
 			{/* ── Bottom inventory panel ── */}
 			<div className="pointer-events-none absolute inset-x-0 bottom-0 z-[980] max-h-[min(92vh,100%)] overflow-hidden">
