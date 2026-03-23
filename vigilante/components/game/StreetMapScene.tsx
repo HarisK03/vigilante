@@ -21,6 +21,7 @@ import InventorySorterModal from "../minigames/InventorySorterModal";
 import type { LatLngBounds, LatLngTuple } from "leaflet";
 import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
+import { useSfx } from "@/lib/sfx";
 import Inventory from "./Inventory";
 import IncidentChanceRollOverlay from "./IncidentChanceRollOverlay";
 import IncidentDeployModal from "./IncidentDeployModal";
@@ -1116,6 +1117,9 @@ export default function StreetMapScene({ saveKey }: Props) {
 	const [overlayMode, setOverlayMode] = useState<OverlayMode>("recruit");
 	const [dialogue, setDialogue] = useState<DialogueState>(null);
 	const [showVettingModal, setShowVettingModal] = useState(false);
+	const { play } = useSfx();
+	const playSfxRef = useRef(play);
+	playSfxRef.current = play;
 
 	// ── TTS + incident dialogue ───────────────────────────────────────────────
 	const { speak, stop: stopTTS, isBusy } = useElevenLabsTTS();
@@ -1210,6 +1214,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 	// ── Incident helpers ──────────────────────────────────────────────────────
 
 	const expireIncident = (id: string) => {
+		play("incidentExpire");
 		setState((s) => ({
 			...s,
 			selectedIncidentId:
@@ -1219,6 +1224,7 @@ export default function StreetMapScene({ saveKey }: Props) {
 	};
 
 	const handleIncidentSelect = (id: string) => {
+		play("incidentSelect");
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
 		setDialogue(null);
@@ -1572,6 +1578,8 @@ export default function StreetMapScene({ saveKey }: Props) {
 							setIncidentDialogue(dialogueLine);
 						}, 600);
 					}
+
+					queueMicrotask(() => playSfxRef.current("incidentAlert"));
 
 					return {
 						...s,
@@ -2118,9 +2126,10 @@ export default function StreetMapScene({ saveKey }: Props) {
 							<button
 								key={lvl.id}
 								type="button"
-								onClick={() =>
-									setState((s) => ({ ...s, level: lvl.id }))
-								}
+								onClick={() => {
+									play("zoomTier");
+									setState((s) => ({ ...s, level: lvl.id }));
+								}}
 								className={`px-3 py-1 rounded-md border cursor-pointer ${
 									state.level === lvl.id
 										? "border-amber-500/70 bg-amber-900/40 text-amber-100"
@@ -2139,12 +2148,13 @@ export default function StreetMapScene({ saveKey }: Props) {
 				<div className="pointer-events-auto mt-4">
 					<button
 						type="button"
-						onClick={() =>
+						onClick={() => {
+							play("panelToggle");
 							setState((s) => ({
 								...s,
 								showIncidentPanel: !s.showIncidentPanel,
-							}))
-						}
+							}));
+						}}
 						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
 					>
 						<span>Incidents</span>

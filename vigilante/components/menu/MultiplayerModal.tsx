@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X, Copy, Loader2 } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { listSlots, readSave, writeNewSave, type SaveSlotId } from "../../lib/saves";
+import { useSfx } from "../../lib/sfx";
 
 export type MultiplayerTab = "load" | "create" | "join";
 
@@ -27,6 +28,7 @@ function formatUpdatedAt(ts: number) {
 export default function MultiplayerModal({ open, onClose, isSignedIn }: MultiplayerModalProps) {
 	const router = useRouter();
 	const { user } = useAuth();
+	const { play } = useSfx();
 	const [tab, setTab] = useState<MultiplayerTab>("load");
 	const [joinCode, setJoinCode] = useState("");
 	const [generatedCode, setGeneratedCode] = useState("");
@@ -47,6 +49,15 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 		}
 	}, [open]);
 
+	useEffect(() => {
+		if (open) play("modalOpen");
+	}, [open, play]);
+
+	const closeModal = useCallback(() => {
+		play("modalClose");
+		onClose();
+	}, [onClose, play]);
+
 	const saveSlots = useMemo(() => {
 		const local = listSlots("local").map((slot) => ({ slot, label: `Local ${slot.index}` }));
 		const cloud =
@@ -57,6 +68,7 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 	if (!open) return null;
 
 	const handleGenerateCode = () => {
+		play("uiClick");
 		setLoading(true);
 		setTimeout(() => {
 			setGeneratedCode(generateJoinCode());
@@ -66,6 +78,7 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 
 	const copyCode = async () => {
 		if (!generatedCode) return;
+		play("uiClick");
 		await navigator.clipboard.writeText(generatedCode);
 		setCopied(true);
 		setTimeout(() => setCopied(false), 2000);
@@ -79,30 +92,33 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 
 	const startFromSlot = (slot: SaveSlotId) => {
 		if (!isSignedIn) return;
+		play("uiClick");
 		ensureSlot(slot);
 		router.push(`/play/multiplayer?mode=load&scope=${slot.scope}&slot=${slot.index}`);
-		onClose();
+		closeModal();
 	};
 
 	const createGame = () => {
 		if (!isSignedIn || !selectedSlot) return;
+		play("uiClick");
 		ensureSlot(selectedSlot);
 		router.push(
 			`/play/multiplayer?mode=create&scope=${selectedSlot.scope}&slot=${selectedSlot.index}&code=${generatedCode || ""}`
 		);
-		onClose();
+		closeModal();
 	};
 
 	const joinGame = () => {
 		if (!isSignedIn || joinCode.length !== 6) return;
+		play("uiClick");
 		router.push(`/play/multiplayer?mode=join&code=${joinCode}`);
-		onClose();
+		closeModal();
 	};
 
 	return (
 		<div
 			className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm opacity-100 transition-opacity duration-200"
-			onClick={(e) => e.target === e.currentTarget && onClose()}
+			onClick={(e) => e.target === e.currentTarget && closeModal()}
 			role="dialog"
 			aria-modal="true"
 			aria-labelledby="multiplayer-modal-title"
@@ -117,7 +133,7 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 					</h2>
 					<button
 						type="button"
-						onClick={onClose}
+						onClick={closeModal}
 						className="p-1.5 rounded-lg text-amber-200/70 hover:bg-amber-900/30 hover:text-amber-100 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-600/50 cursor-pointer"
 						aria-label="Close"
 					>
@@ -130,7 +146,10 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 						<button
 							key={t}
 							type="button"
-							onClick={() => setTab(t)}
+							onClick={() => {
+								play("uiClick");
+								setTab(t);
+							}}
 							className={`flex-1 py-3 text-sm font-medium capitalize transition-colors ${
 								tab === t
 									? "text-amber-400 border-b-2 border-amber-500 bg-amber-950/20"
@@ -157,7 +176,10 @@ export default function MultiplayerModal({ open, onClose, isSignedIn }: Multipla
 										<button
 											key={`${slot.scope}-${slot.userId ?? "local"}-${slot.index}`}
 											type="button"
-											onClick={() => setSelectedSlot(slot)}
+											onClick={() => {
+												play("uiClick");
+												setSelectedSlot(slot);
+											}}
 											className={`group relative overflow-hidden flex flex-col items-start justify-between py-4 px-4 rounded-xl border transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40 ${
 												active
 													? "border-amber-500/80 bg-linear-to-b from-amber-950/35 to-black/25 shadow-lg shadow-black/35"

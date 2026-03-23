@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { FaDiscord, FaGithub, FaGoogle } from "react-icons/fa";
 import { useAuth } from "../../lib/auth";
+import { useSfx } from "../../lib/sfx";
 import MenuBackground from "../../components/menu/MenuBackground";
 import RainLayer from "../../components/menu/RainLayer";
 
 export default function LoginPage() {
 	const { user, signInWithProvider } = useAuth();
+	const { play } = useSfx();
 
 	return (
 		<div className="fixed inset-0 min-h-screen overflow-auto">
@@ -43,6 +45,7 @@ export default function LoginPage() {
 						<button
 							type="button"
 							onClick={() => {
+								play("uiClick");
 								signInWithProvider("google");
 							}}
 							className="group flex items-center justify-center h-12 rounded-xl border border-amber-900/40 bg-black/30 text-amber-200/80 hover:text-amber-100 hover:border-amber-700/50 hover:bg-amber-950/20 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40"
@@ -54,6 +57,7 @@ export default function LoginPage() {
 						<button
 							type="button"
 							onClick={() => {
+								play("uiClick");
 								signInWithProvider("github");
 							}}
 							className="group flex items-center justify-center h-12 rounded-xl border border-amber-900/40 bg-black/30 text-amber-200/80 hover:text-amber-100 hover:border-amber-700/50 hover:bg-amber-950/20 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40"
@@ -65,6 +69,7 @@ export default function LoginPage() {
 						<button
 							type="button"
 							onClick={() => {
+								play("uiClick");
 								signInWithProvider("discord");
 							}}
 							className="group flex items-center justify-center h-12 rounded-xl border border-amber-900/40 bg-black/30 text-amber-200/80 hover:text-amber-100 hover:border-amber-700/50 hover:bg-amber-950/20 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40"

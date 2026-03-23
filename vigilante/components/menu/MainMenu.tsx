@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Lock, LogOut, User, UserPlus, UserRound, Users } from "lucide-react";
 import { useAuth } from "../../lib/auth";
+import { useSfx } from "../../lib/sfx";
 import MenuBackground from "./MenuBackground";
 import RainLayer from "./RainLayer";
 import MultiplayerModal from "./MultiplayerModal";
@@ -18,6 +19,7 @@ const ACTIVE_BUTTON =
 
 export default function MainMenu() {
 	const { user, signOut } = useAuth();
+	const { play } = useSfx();
 	const [multiplayerOpen, setMultiplayerOpen] = useState(false);
 	const [singleplayerOpen, setSingleplayerOpen] = useState(false);
 
@@ -97,6 +99,7 @@ export default function MainMenu() {
 							<div className="flex items-stretch gap-3">
 								<Link
 									href="/profile"
+									onClick={() => play("uiClick")}
 									className={`flex-1 flex items-center gap-3 px-6 rounded-xl border text-lg font-semibold transition-all duration-200 ${MAIN_BUTTON_HEIGHT} ${ACTIVE_BUTTON}`}
 								>
 									<UserRound
@@ -108,6 +111,7 @@ export default function MainMenu() {
 								<button
 									type="button"
 									onClick={() => {
+										play("uiClick");
 										signOut();
 										setMultiplayerOpen(false);
 										setSingleplayerOpen(false);
@@ -126,6 +130,7 @@ export default function MainMenu() {
 						<div className="flex flex-col items-center gap-3">
 							<Link
 								href="/login"
+								onClick={() => play("uiClick")}
 								className="flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-amber-700/50 bg-amber-950/20 text-amber-200 font-medium hover:bg-amber-900/30 transition-colors"
 							>
 								<UserPlus className="w-4 h-4" />
