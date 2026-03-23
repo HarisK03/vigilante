@@ -9,32 +9,16 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
+import {
+	clampVolume,
+	DEFAULT_VOLUME,
+	sliderToPlaybackGain,
+} from "./audioGain";
 
 const STORAGE_KEY_VOLUME = "vigilante:volume";
 
-/**
- * Default slider position (0–1) for first visit / reset.
- * Lower = quieter starting point.
- */
-const DEFAULT_VOLUME = 0.55;
-
-/**
- * Max output gain at slider = 1 (track is often mastered loud; tune 0.45–0.65).
- */
-const PLAYBACK_GAIN_CAP = 0.52;
-
-/**
- * Curve exponent (>1 = quieter at the same slider position, especially low end).
- * Tune ~1.2–1.6.
- */
-const PLAYBACK_CURVE_EXPONENT = 1.35;
-
-/** Maps UI slider 0–1 → HTMLAudioElement.volume (0–1). */
-function sliderToPlaybackGain(slider: number): number {
-	const clamped = Math.min(1, Math.max(0, slider));
-	if (clamped <= 0) return 0;
-	return Math.pow(clamped, PLAYBACK_CURVE_EXPONENT) * PLAYBACK_GAIN_CAP;
-}
+/** Re-export for any code that needs the same bounds */
+export { DEFAULT_VOLUME, sliderToPlaybackGain } from "./audioGain";
 
 /** Public URL for the file in `public/audio/music/music.ogg` */
 export const BACKGROUND_MUSIC_SRC = "/audio/music/music.ogg";
@@ -55,14 +39,10 @@ export function useGameAudio() {
 	return ctx;
 }
 
-function clampVolume(value: number): number {
-	if (Number.isNaN(value)) return DEFAULT_VOLUME;
-	return Math.min(1, Math.max(0, value));
-}
-
 export function GameAudioProvider({ children }: { children: ReactNode }) {
 	const [volume, setVolumeState] = useState(DEFAULT_VOLUME);
 	const audioRef = useRef<HTMLAudioElement | null>(null);
+	const volumeRef = useRef(volume);
 
 	const setVolume = useCallback((value: number) => {
 		setVolumeState(clampVolume(value));
@@ -82,32 +62,46 @@ export function GameAudioProvider({ children }: { children: ReactNode }) {
 	}, []);
 
 	useEffect(() => {
+		volumeRef.current = volume;
+	}, [volume]);
+
+	useEffect(() => {
 		localStorage.setItem(STORAGE_KEY_VOLUME, String(volume));
 		document.documentElement.dataset.muted = volume === 0 ? "1" : "0";
 	}, [volume]);
 
+	// Drive music gain + playback: must call play() when volume goes from 0 → audible,
+	// after autoplay was blocked, or when the user raises the slider.
 	useEffect(() => {
 		const el = audioRef.current;
 		if (!el) return;
 		el.volume = sliderToPlaybackGain(volume);
+		if (volume <= 0) {
+			el.pause();
+			return;
+		}
+		void el.play().catch(() => {});
 	}, [volume]);
 
 	// Autoplay (may be blocked until user interacts — unlock on first pointer)
+	// If the browser blocked autoplay, resume on first pointer while music should be audible.
 	useEffect(() => {
 		const el = audioRef.current;
 		if (!el) return;
-
 		const tryPlay = () => {
 			void el.play().catch(() => {});
 		};
 		tryPlay();
-
 		const unlock = () => {
 			tryPlay();
+			const current = audioRef.current;
+			const v = volumeRef.current;
+			if (!current || v <= 0) return;
+			current.volume = sliderToPlaybackGain(v);
+			void current.play().catch(() => {});
 			document.removeEventListener("pointerdown", unlock);
 		};
 		document.addEventListener("pointerdown", unlock);
-
 		return () => document.removeEventListener("pointerdown", unlock);
 	}, []);
 
