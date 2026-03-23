@@ -1,13 +1,19 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { FaDiscord, FaGithub, FaGoogle } from "react-icons/fa";
 import { useAuth } from "../../lib/auth";
+import { useSfx } from "../../lib/sfx";
 import MenuBackground from "../../components/menu/MenuBackground";
 import RainLayer from "../../components/menu/RainLayer";
 
-export default function LoginPage() {
+function LoginInner() {
 	const { user, signInWithProvider } = useAuth();
+	const { play } = useSfx();
+	const searchParams = useSearchParams();
+	const nextPath = searchParams.get("next") ?? undefined;
 
 	return (
 		<div className="fixed inset-0 min-h-screen overflow-auto">
@@ -43,7 +49,8 @@ export default function LoginPage() {
 						<button
 							type="button"
 							onClick={() => {
-								signInWithProvider("google");
+								play("uiClick");
+								signInWithProvider("google", nextPath);
 							}}
 							className="group flex items-center justify-center h-12 rounded-xl border border-amber-900/40 bg-black/30 text-amber-200/80 hover:text-amber-100 hover:border-amber-700/50 hover:bg-amber-950/20 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40"
 							aria-label="Sign in with Google"
@@ -54,7 +61,8 @@ export default function LoginPage() {
 						<button
 							type="button"
 							onClick={() => {
-								signInWithProvider("github");
+								play("uiClick");
+								signInWithProvider("github", nextPath);
 							}}
 							className="group flex items-center justify-center h-12 rounded-xl border border-amber-900/40 bg-black/30 text-amber-200/80 hover:text-amber-100 hover:border-amber-700/50 hover:bg-amber-950/20 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40"
 							aria-label="Sign in with GitHub"
@@ -65,7 +73,8 @@ export default function LoginPage() {
 						<button
 							type="button"
 							onClick={() => {
-								signInWithProvider("discord");
+								play("uiClick");
+								signInWithProvider("discord", nextPath);
 							}}
 							className="group flex items-center justify-center h-12 rounded-xl border border-amber-900/40 bg-black/30 text-amber-200/80 hover:text-amber-100 hover:border-amber-700/50 hover:bg-amber-950/20 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-600/40"
 							aria-label="Sign in with Discord"
@@ -84,3 +93,16 @@ export default function LoginPage() {
 	);
 }
 
+export default function LoginPage() {
+	return (
+		<Suspense
+			fallback={
+				<div className="fixed inset-0 min-h-screen bg-[#0a0a0b] flex items-center justify-center text-amber-200/60 text-sm">
+					Loading…
+				</div>
+			}
+		>
+			<LoginInner />
+		</Suspense>
+	);
+}

@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronLeft, ChevronRight, ChevronUp, Home, Package2, X } from "lucide-react";
@@ -9,7 +15,35 @@ import type { LatLngBounds, LatLngTuple } from "leaflet";
 import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
 import Inventory from "./Inventory";
+import PoliceSystem from "./police/policeSystem";
+import type {
+	PoliceEtaItem,
+	PoliceRenderItem,
+} from "./police/policeTypes";
+import IncidentChanceRollOverlay from "./IncidentChanceRollOverlay";
+import IncidentDeployModal from "./IncidentDeployModal";
+import { IncidentTimerBar } from "./IncidentTimerBar";
 import { vigilantes } from "@/app/components/data/vigilante";
+import {
+	DEFAULT_RESOURCE_POOL,
+	applyDeployment,
+	canStageDeployment,
+	forfeitDeployment,
+	returnDeployment,
+	type ResourcePoolEntry,
+} from "@/lib/resourcePool";
+import {
+	DEFAULT_CAREER_STATS,
+	mergeCareerStats,
+	type CareerStats,
+} from "@/lib/careerStats";
+import { mergePurchasedBuffIds } from "@/lib/purchasedBuffs";
+import { markCloudFlush, upsertGameSave } from "@/lib/cloudSaves";
+import { readSave, touchSave, type SaveSlotId } from "@/lib/saves";
+import {
+	computeIncidentRollOutcome,
+	type DispatchRollBreakdown,
+} from "@/lib/incidentRoll";
 import VettingMinigameModal from "@/components/game/VettingMinigameModal";
 import {
 	getSessionMarkers,
@@ -47,17 +81,31 @@ if (typeof window !== "undefined") {
 }
 
 type Props = {
-	saveKey?: string;
-	mode?: "singleplayer" | "multiplayer";
-	sessionId?: number;
+  saveKey: string;
+  /** slot identity for menu `updatedAt` / titles (`vigilante:save:*`), separate from `saveKey` game blob. */
+  saveSlot?: SaveSlotId;
+  /** When set, game state is upserted to Supabase once per minute while you play, plus on tab close. */
+  cloudSync?: {
+    userId: string;
+    slotIndex: 1 | 2 | 3;
+  };
+  mode?: "singleplayer" | "multiplayer";
+  sessionId?: number;
 };
 
-type IncidentCategory = "fire" | "robbery" | "medical";
-type IncidentStatus = "active" | "resolved";
+type IncidentStatus = "active" | "resolving" | "resolved";
+
+type IncidentResolution = {
+	success: boolean;
+	adjustedPercent: number;
+	beforeLuckPercent: number;
+	rolled: number;
+} & Partial<DispatchRollBreakdown>;
 
 type Incident = {
 	id: string;
-	category: IncidentCategory;
+	category: IncidentArchetype;
+	typeLabel: string;
 	status: IncidentStatus;
 	lat: number;
 	lng: number;
@@ -67,6 +115,11 @@ type Incident = {
 	expiresAt: number;
 	successChance: number;
 	assignedResources: AssignedResource[];
+	/** Units out on this incident until recalled */
+	deployedResourceIds?: string[];
+	/** Roster sent on this dispatch (success heuristic) */
+	deployedVigilanteIds?: string[];
+	resolution?: IncidentResolution | null;
 };
 
 type CharacterKind = "vigilante" | "citizen" | "police";
@@ -96,14 +149,32 @@ type GameState = {
 	incidents: Incident[];
 	showIncidentPanel: boolean;
 	showMinigamePanel: boolean;
+	showPolicePanel: boolean;
 	showInventoryPanel: boolean;
 	ownedVigilanteIds: string[];
 	recruitLeads: RecruitLead[];
+	/** r1–r10 + b1–b3: total owned vs out on incidents */
+	resourcePool: Record<string, ResourcePoolEntry>;
+
+	/** Vigilante id → timestamp (ms) when injury recovery completes */
+	vigilanteInjuryUntil: Record<string, number>;
+	/** Lifetime counters (persisted with save). */
+	careerStats: CareerStats;
+	/** Buff upgrades unlocked; stock qty still in `resourcePool` (b1–b3). */
+	purchasedBuffIds: string[];
 };
 
 const CENTER: LatLngTuple = [40.7128, -74.006];
 const BASE: LatLngTuple = [40.7139, -74.0038];
-const HOMEBASE_POS: LatLngTuple = [40.7139, -74.0038];
+
+const OWNED_VIG_MARKER_OFFSETS: { dLat: number; dLng: number }[] = [
+	{ dLat: 0.0028, dLng: -0.0022 },
+	{ dLat: -0.0019, dLng: 0.0026 },
+	{ dLat: 0.0012, dLng: 0.0029 },
+	{ dLat: -0.0025, dLng: -0.0014 },
+	{ dLat: 0.0021, dLng: 0.001 },
+	{ dLat: -0.0012, dLng: -0.0028 },
+];
 
 const LEVELS = [
 	{ id: 1, label: "L1", zoomOut: 15, zoomIn: 15 },
@@ -134,14 +205,62 @@ const RESOURCE_OPTIONS = ["Fire Truck", "Medic Kit", "Vigilante"];
 // Helpers
 // ---------------------------------------------------------------------------
 const STATIC_CHARACTER_BASES: CharacterPin[] = [
-	{ id: "cit-oldman", name: "Old Man", initial: "O", kind: "citizen", lat: 40.713, lng: -74.0112 },
-	{ id: "cit-girl", name: "Girl", initial: "G", kind: "citizen", lat: 40.7178, lng: -74.0014 },
-	{ id: "cit-woman", name: "Woman", initial: "W", kind: "citizen", lat: 40.7102, lng: -74.0005 },
-	{ id: "cit-helper", name: "Helper", initial: "H", kind: "citizen", lat: 40.7185, lng: -74.0072 },
-
-	{ id: "cop-diaz", name: "Officer Diaz", initial: "D", kind: "police", lat: 40.7129, lng: -73.9998 },
-	{ id: "cop-kim", name: "Detective Kim", initial: "K", kind: "police", lat: 40.7166, lng: -74.01 },
-	{ id: "chief-williams", name: "Chief Williams", initial: "C", kind: "police", lat: 40.7095, lng: -74.0069 },
+	{
+		id: "cit-oldman",
+		name: "Old Man",
+		initial: "O",
+		kind: "citizen",
+		lat: 40.713,
+		lng: -74.0112,
+	},
+	{
+		id: "cit-girl",
+		name: "Girl",
+		initial: "G",
+		kind: "citizen",
+		lat: 40.7178,
+		lng: -74.0014,
+	},
+	{
+		id: "cit-woman",
+		name: "Woman",
+		initial: "W",
+		kind: "citizen",
+		lat: 40.7102,
+		lng: -74.0005,
+	},
+	{
+		id: "cit-helper",
+		name: "Helper",
+		initial: "H",
+		kind: "citizen",
+		lat: 40.7185,
+		lng: -74.0072,
+	},
+	{
+		id: "cop-diaz",
+		name: "Officer Diaz",
+		initial: "D",
+		kind: "police",
+		lat: 40.7129,
+		lng: -73.9998,
+	},
+	{
+		id: "cop-kim",
+		name: "Detective Kim",
+		initial: "K",
+		kind: "police",
+		lat: 40.7166,
+		lng: -74.01,
+	},
+	{
+		id: "chief-williams",
+		name: "Chief Williams",
+		initial: "C",
+		kind: "police",
+		lat: 40.7095,
+		lng: -74.0069,
+	},
 ];
 
 type DialogueRole = "Citizen" | "Police" | "Chief";
@@ -230,14 +349,14 @@ const NPC_DIALOGUE = {
 	},
 };
 
-function incidentCategoryLabel(cat: IncidentCategory) {
-	if (cat === "fire") return "Fire";
-	if (cat === "robbery") return "Robbery";
-	return "Medical";
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function levelConfig(level: number) {
 	return LEVELS[Math.max(0, Math.min(level - 1, LEVELS.length - 1))];
+}
+
+function randomFrom<T>(arr: T[]): T {
+	return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function sampleInBounds(bounds: LatLngBounds): { lat: number; lng: number } {
@@ -245,15 +364,13 @@ function sampleInBounds(bounds: LatLngBounds): { lat: number; lng: number } {
 	const north = bounds.getNorth();
 	const west = bounds.getWest();
 	const east = bounds.getEast();
-
 	const inset = 0.04;
 	const latSpan = (north - south) * (1 - inset * 2);
 	const lngSpan = (east - west) * (1 - inset * 2);
-
-	const lat = south + (north - south) * inset + Math.random() * latSpan;
-	const lng = west + (east - west) * inset + Math.random() * lngSpan;
-
-	return { lat, lng };
+	return {
+		lat: south + (north - south) * inset + Math.random() * latSpan,
+		lng: west + (east - west) * inset + Math.random() * lngSpan,
+	};
 }
 
 function nudgeNearby(lat: number, lng: number) {
@@ -299,16 +416,8 @@ function pushAwayFromPoint(
 	const dLat = point.lat - center.lat;
 	const dLng = point.lng - center.lng;
 	const dist = Math.sqrt(dLat * dLat + dLng * dLng);
-
 	if (dist >= minDistance) return point;
-
-	if (dist < 1e-9) {
-		return {
-			lat: center.lat + minDistance,
-			lng: center.lng,
-		};
-	}
-
+	if (dist < 1e-9) return { lat: center.lat + minDistance, lng: center.lng };
 	const scale = minDistance / dist;
 	return {
 		lat: center.lat + dLat * scale,
@@ -316,12 +425,38 @@ function pushAwayFromPoint(
 	};
 }
 
-function randomFrom<T>(arr: T[]) {
-	return arr[Math.floor(Math.random() * arr.length)];
+function stableCitizenPositionAroundIncident(
+	incidentId: string,
+	center: { lat: number; lng: number },
+	slot: number,
+) {
+	let seed = slot * 97;
+	for (let i = 0; i < incidentId.length; i += 1) {
+		seed = (seed * 31 + incidentId.charCodeAt(i)) % 100000;
+	}
+
+	const angle = ((seed % 360) * Math.PI) / 180;
+	const radius = 0.00105 + ((seed % 5) * 0.00012);
+
+	return {
+		lat: center.lat + Math.cos(angle) * radius,
+		lng: center.lng + Math.sin(angle) * radius,
+	};
 }
 
-function computeSuccessChance(cat: IncidentCategory, lifetimeMs: number) {
-	const base = cat === "fire" ? 0.65 : cat === "robbery" ? 0.5 : 0.7;
+function isLikelyWaterOnlyPoi(p: OsmPlace): boolean {
+	const k = (p.kind ?? "").toLowerCase();
+	if (k === "ferry_terminal") return true;
+	const n = p.name.toLowerCase();
+	if (n.includes("ferry terminal")) return true;
+	return false;
+}
+
+function computeSuccessChance(
+	archetype: IncidentArchetype,
+	lifetimeMs: number,
+) {
+	const base = archetypeSuccessBase(archetype);
 	const t = Math.min(lifetimeMs / (5 * 60_000), 1);
 	const noise = (Math.random() - 0.5) * 0.1;
 	return Math.round(
@@ -329,42 +464,34 @@ function computeSuccessChance(cat: IncidentCategory, lifetimeMs: number) {
 	);
 }
 
-function makeIncident(lat: number, lng: number): Incident {
+function makeIncident(lat: number, lng: number, place: OsmPlace): Incident {
 	const now = Date.now();
-	const categories: IncidentCategory[] = ["fire", "robbery", "medical"];
-	const category = categories[Math.floor(Math.random() * categories.length)];
 	const lifetimeMs = 30_000;
-
+	const template = pickIncidentTemplate();
+	const filled = fillIncidentTemplate(template, shortenPlaceName(place.name));
 	return {
 		id: `incident_${Math.random().toString(16).slice(2)}_${now.toString(16)}`,
-		category,
+		category: filled.archetype,
+		typeLabel: filled.typeLabel,
 		status: "active",
 		lat,
 		lng,
-		title:
-			category === "fire"
-				? "Alleyway Fire"
-				: category === "robbery"
-					? "Corner Store Robbery"
-					: "Medical Emergency",
-		summary:
-			category === "fire"
-				? "Reports of smoke near a tenement block. Neighbors say they heard shouting."
-				: category === "robbery"
-					? "Masked figures spotted running from a storefront. No sirens yet."
-					: "Caller reports someone collapsed on a dimly lit street.",
+		title: filled.title,
+		summary: filled.summary,
 		createdAt: now,
 		expiresAt: now + lifetimeMs,
-		successChance: computeSuccessChance(category, lifetimeMs),
+		successChance: computeSuccessChance(filled.archetype, lifetimeMs),
 		assignedResources: [],
 	};
 }
 
-function makeRecruitLead(vigilanteId: string, bounds: LatLngBounds): RecruitLead {
+function makeRecruitLead(
+	vigilanteId: string,
+	bounds: LatLngBounds,
+): RecruitLead {
 	const now = Date.now();
 	const lifetimeMs = 40_000;
 	const { lat, lng } = sampleInBounds(bounds);
-
 	return {
 		id: `recruit_${vigilanteId}_${now.toString(16)}`,
 		vigilanteId,
@@ -375,17 +502,82 @@ function makeRecruitLead(vigilanteId: string, bounds: LatLngBounds): RecruitLead
 	};
 }
 
-function makeIncidentIcon(category: IncidentCategory, isSelected: boolean, isResolved: boolean) {
+/**
+ * Spatially uniform POI picker.
+ *
+ * Divides the bounding box into a COLS×ROWS grid, shuffles the cells, then
+ * walks them until it finds one containing at least one POI — and returns a
+ * random POI from that cell. Every cell has equal probability of being chosen
+ * first, so incidents spread evenly across the map regardless of how densely
+ * OSM has tagged any given neighbourhood.
+ *
+ * Falls back to a plain random pick if somehow all cells are empty.
+ */
+const SPAWN_GRID_COLS = 8;
+const SPAWN_GRID_ROWS = 5;
+
+function pickSpatiallyUniformPoi(
+	places: OsmPlace[],
+	bounds: LatLngBounds,
+): OsmPlace | null {
+	if (places.length === 0) return null;
+
+	const land = places.filter((p) => !isLikelyWaterOnlyPoi(p));
+	const pool = land.length > 0 ? land : places;
+
+	const s = bounds.getSouth();
+	const n = bounds.getNorth();
+	const w = bounds.getWest();
+	const e = bounds.getEast();
+
+	// Shuffle cell indices so every spawn picks a fresh random cell order
+	const cellCount = SPAWN_GRID_COLS * SPAWN_GRID_ROWS;
+	const cellOrder = Array.from({ length: cellCount }, (_, i) => i);
+	for (let i = cellOrder.length - 1; i > 0; i--) {
+		const j = Math.floor(Math.random() * (i + 1));
+		[cellOrder[i], cellOrder[j]] = [cellOrder[j]!, cellOrder[i]!];
+	}
+
+	for (const idx of cellOrder) {
+		const row = Math.floor(idx / SPAWN_GRID_COLS);
+		const col = idx % SPAWN_GRID_COLS;
+		const cellS = s + (row / SPAWN_GRID_ROWS) * (n - s);
+		const cellN = s + ((row + 1) / SPAWN_GRID_ROWS) * (n - s);
+		const cellW = w + (col / SPAWN_GRID_COLS) * (e - w);
+		const cellE = w + ((col + 1) / SPAWN_GRID_COLS) * (e - w);
+		const pad = 1e-4;
+		const inCell = pool.filter(
+			(p) =>
+				p.lat >= cellS - pad &&
+				p.lat <= cellN + pad &&
+				p.lng >= cellW - pad &&
+				p.lng <= cellE + pad,
+		);
+		if (inCell.length > 0) return randomFrom(inCell);
+	}
+
+	return randomFrom(pool); // fallback: all cells were empty
+}
+
+// ── Icon factories ────────────────────────────────────────────────────────────
+
+function makeIncidentIcon(
+	_category: IncidentArchetype,
+	isSelected: boolean,
+	isResolved: boolean,
+) {
 	const border = isSelected ? "#b91c1c" : "#7f1d1d";
 	const baseColor = "#f97373";
-	const bg = isResolved ? "rgba(24,24,27,0.9)" : "rgba(127,29,29,0.6)";
+	const bg = "rgba(127,29,29,0.6)";
+	const resolvedBg = "rgba(24,24,27,0.9)";
+	const resolvedBorder = "#52525b";
 	const pulse = !isResolved && isSelected;
 
 	const html = `<div style="
 		width:28px;height:28px;border-radius:999px;
-		border:2px solid ${border};background:${bg};
+		border:2px solid ${isResolved ? resolvedBorder : border};background:${isResolved ? resolvedBg : bg};
 		display:flex;align-items:center;justify-content:center;
-		color:${baseColor};font-weight:800;font-size:16px;
+		color:${isResolved ? "#a1a1aa" : baseColor};font-weight:800;font-size:16px;
 		text-shadow:0 0 4px rgba(0,0,0,0.9);
 		box-shadow:0 0 16px rgba(0,0,0,0.9);">!</div>`;
 
@@ -402,58 +594,64 @@ function makeIncidentIcon(category: IncidentCategory, isSelected: boolean, isRes
 function makeCharacterIcon(initial: string, kind: CharacterKind) {
 	const palette =
 		kind === "police"
-			? {
-					border: "#1d4ed8",
-					bg: "rgba(30,64,175,0.78)",
-					text: "#dbeafe",
+			? { border: "#1d4ed8", bg: "rgba(30,64,175,0.78)", text: "#dbeafe" }
+			: kind === "vigilante"
+				? {
+					border: "#b45309",
+					bg: "rgba(120,53,15,0.82)",
+					text: "#fde68a",
 				}
-			: {
+				: {
 					border: "#4b5563",
 					bg: "rgba(55,65,81,0.8)",
 					text: "#f3f4f6",
 				};
 
 	const html = `<div style="
-		width:30px;
-		height:30px;
-		border-radius:999px;
-		border:2px solid ${palette.border};
-		background:${palette.bg};
+		width:44px;
+		height:44px;
 		display:flex;
 		align-items:center;
 		justify-content:center;
-		color:${palette.text};
-		font-weight:800;
-		font-size:14px;
-		text-shadow:0 0 4px rgba(0,0,0,0.8);
-		box-shadow:0 0 14px rgba(0,0,0,0.85);
+		border-radius:999px;
+		background:transparent;
 		cursor:pointer;
-	">${initial}</div>`;
+		pointer-events:auto;
+	">
+		<div style="
+			width:30px;
+			height:30px;
+			border-radius:999px;
+			border:2px solid ${palette.border};
+			background:${palette.bg};
+			display:flex;
+			align-items:center;
+			justify-content:center;
+			color:${palette.text};
+			font-weight:800;
+			font-size:14px;
+			text-shadow:0 0 4px rgba(0,0,0,0.8);
+			box-shadow:0 0 14px rgba(0,0,0,0.85);
+			pointer-events:none;
+		">${initial}</div>
+	</div>`;
 
 	return L.divIcon({
 		html,
 		className: "vigilante-character-icon",
-		iconSize: [30, 30],
-		iconAnchor: [15, 15],
+		iconSize: [44, 44],
+		iconAnchor: [22, 22],
 	});
 }
 
 function makeRecruitIcon(initial: string) {
 	const html = `<div style="
-		width:34px;
-		height:34px;
-		border-radius:999px;
-		border:2px solid #b45309;
-		background:rgba(120,53,15,0.86);
-		display:flex;
-		align-items:center;
-		justify-content:center;
-		color:#fde68a;
-		font-weight:800;
-		font-size:15px;
+		width:34px;height:34px;border-radius:999px;
+		border:2px solid #b45309;background:rgba(120,53,15,0.86);
+		display:flex;align-items:center;justify-content:center;
+		color:#fde68a;font-weight:800;font-size:15px;
 		text-shadow:0 0 4px rgba(0,0,0,0.85);
-		box-shadow:0 0 18px rgba(120,53,15,0.55);
-		cursor:pointer;
+		box-shadow:0 0 18px rgba(120,53,15,0.55);cursor:pointer;
 	">${initial}</div>`;
 
 	return L.divIcon({
@@ -464,31 +662,40 @@ function makeRecruitIcon(initial: string) {
 	});
 }
 
-function makeHomebaseIcon() {
-	const html = `<div style="
-		width:36px;
-		height:36px;
-		border-radius:12px;
-		border:2px solid #7c2d12;
-		background:rgba(20,20,20,0.92);
-		display:flex;
-		align-items:center;
-		justify-content:center;
-		color:#fde68a;
-		font-weight:800;
-		font-size:18px;
-		text-shadow:0 0 4px rgba(0,0,0,0.85);
-		box-shadow:0 0 16px rgba(0,0,0,0.9);
-		cursor:pointer;
-	">⌂</div>`;
+function formatEta(ms: number) {
+	const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
 
-	return L.divIcon({
-		html,
-		className: "vigilante-homebase-icon",
-		iconSize: [36, 36],
-		iconAnchor: [18, 18],
-	});
+	if (minutes > 0) {
+		return `${minutes}m ${seconds}s`;
+	}
+	return `${seconds}s`;
 }
+
+const POLICE_BAR_MAX_MS = 60_000;
+
+function PoliceEtaBar({ etaMs }: { etaMs: number }) {
+	const ratio = Math.max(0, Math.min(1, etaMs / POLICE_BAR_MAX_MS));
+	const visibleWidth = etaMs > 0 ? Math.max(ratio * 100, 6) : 0;
+
+	return (
+		<div className="mt-2">
+			<div className="h-[5px] w-full rounded-full bg-amber-950/70 overflow-hidden border border-amber-900/40">
+				<div
+					className="h-full rounded-full transition-[width] duration-300 ease-linear shadow-[0_0_10px_rgba(251,191,36,0.55)]"
+					style={{
+						width: `${visibleWidth}%`,
+						background:
+							"linear-gradient(90deg, rgba(251,191,36,0.95) 0%, rgba(245,158,11,0.9) 100%)",
+					}}
+				/>
+			</div>
+		</div>
+	);
+}
+
+// ── Map sub-components ────────────────────────────────────────────────────────
 
 function ZoomController({
 	level,
@@ -501,7 +708,6 @@ function ZoomController({
 
 	useEffect(() => {
 		const lvl = levelConfig(level);
-
 		const pane = map.getPane("mapPane");
 		if (!pane) return;
 
@@ -513,13 +719,11 @@ function ZoomController({
 		requestAnimationFrame(() => {
 			const safePane = map.getPane("mapPane");
 			if (!safePane) return;
-
 			map.setView(BASE, lvl.zoomOut, { animate: false });
 
 			requestAnimationFrame(() => {
 				const finalPane = map.getPane("mapPane");
 				if (!finalPane) return;
-
 				try {
 					const b = map.getBounds();
 					map.setMaxBounds(b);
@@ -534,35 +738,56 @@ function ZoomController({
 	return null;
 }
 
-const TimerBar = React.memo(function TimerBar({
-	createdAt,
-	expiresAt,
-	onExpire,
+function CharacterMarkerItem({
+	pin,
+	onSelect,
 }: {
-	createdAt: number;
-	expiresAt: number;
-	onExpire: () => void;
+	pin: CharacterPin;
+	onSelect: (pin: CharacterPin) => void;
 }) {
-	const totalMs = expiresAt - createdAt;
-	const delayMs = useRef(createdAt - Date.now()).current;
+	const markerRef = useRef<L.Marker | null>(null);
+
+	const icon = useMemo(
+		() => makeCharacterIcon(pin.initial, pin.kind),
+		[pin.initial, pin.kind],
+	);
+
+	useEffect(() => {
+		if (!markerRef.current) return;
+		markerRef.current.setLatLng([pin.lat, pin.lng]);
+	}, [pin.lat, pin.lng]);
 
 	return (
-		<div className="mt-2 h-[3px] w-full rounded-full bg-amber-900/40 overflow-hidden">
-			<div
-				style={{
-					animationName: "vigilante-timer-drain",
-					animationDuration: `${totalMs}ms`,
-					animationDelay: `${delayMs}ms`,
-					animationTimingFunction: "linear",
-					animationFillMode: "forwards",
-				}}
-				className="h-full w-full origin-left bg-amber-500/70"
-				onAnimationEnd={onExpire}
-			/>
-		</div>
+		<Marker
+			ref={(instance) => {
+				markerRef.current = instance;
+			}}
+			position={[pin.lat, pin.lng]}
+			icon={icon}
+			zIndexOffset={
+				pin.kind === "vigilante"
+					? 11000
+					: pin.kind === "police"
+						? 9000
+						: 4000
+			}
+			interactive
+			bubblingMouseEvents={false}
+			riseOnHover
+			eventHandlers={{
+				mousedown: (e) => {
+					e.originalEvent?.preventDefault?.();
+					e.originalEvent?.stopPropagation?.();
+				},
+				click: (e) => {
+					e.originalEvent?.preventDefault?.();
+					e.originalEvent?.stopPropagation?.();
+					onSelect(pin);
+				},
+			}}
+		/>
 	);
-});
-
+}
 function CharacterMarkers({
 	pins,
 	onSelect,
@@ -571,23 +796,14 @@ function CharacterMarkers({
 	onSelect: (pin: CharacterPin) => void;
 }) {
 	return (
-		<Pane name="characterPane" style={{ zIndex: 700 }}>
-			{pins.map((pin) => {
-				const key = `${pin.id}-${pin.lat.toFixed(5)}-${pin.lng.toFixed(5)}`;
-				return (
-					<Marker
-						key={key}
-						position={[pin.lat, pin.lng]}
-						icon={makeCharacterIcon(pin.initial, pin.kind)}
-						zIndexOffset={0}
-						interactive
-						riseOnHover
-						eventHandlers={{
-							click: () => onSelect(pin),
-						}}
-					/>
-				);
-			})}
+		<Pane name="characterPane" style={{ zIndex: 930 }}>
+			{pins.map((pin) => (
+				<CharacterMarkerItem
+					key={pin.id}
+					pin={pin}
+					onSelect={onSelect}
+				/>
+			))}
 		</Pane>
 	);
 }
@@ -612,27 +828,10 @@ function RecruitMarkers({
 						zIndexOffset={15000}
 						interactive
 						riseOnHover
-						eventHandlers={{
-							click: () => onSelect(lead),
-						}}
+						eventHandlers={{ click: () => onSelect(lead) }}
 					/>
 				);
 			})}
-		</Pane>
-	);
-}
-
-function HomebaseMarker({ onClick }: { onClick: () => void }) {
-	return (
-		<Pane name="homebasePane" style={{ zIndex: 880 }}>
-			<Marker
-				position={HOMEBASE_POS}
-				icon={makeHomebaseIcon()}
-				zIndexOffset={20000}
-				interactive
-				riseOnHover
-				eventHandlers={{ click: onClick }}
-			/>
 		</Pane>
 	);
 }
@@ -646,16 +845,13 @@ function IncidentMarkers({
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 }) {
-	// Cache icons so existing markers don't get their DOM replaced on every
-	// state tick/spawn (which would restart CSS animations and look choppy).
 	const iconCacheRef = useRef<
 		Map<string, { selected: boolean; icon: L.DivIcon }>
 	>(new Map());
 
-	// Prune cache entries for incidents that no longer exist.
 	useEffect(() => {
 		const activeIds = new Set(
-			incidents.filter((i) => i.status === "active").map((i) => i.id),
+			incidents.filter(isOngoingIncident).map((i) => i.id),
 		);
 		for (const key of iconCacheRef.current.keys()) {
 			if (!activeIds.has(key)) iconCacheRef.current.delete(key);
@@ -665,7 +861,7 @@ function IncidentMarkers({
 	return (
 		<Pane name="incidentPane" style={{ zIndex: 820 }}>
 			{incidents
-				.filter((inc) => inc.status === "active")
+				.filter((inc) => isOngoingIncident(inc))
 				.map((inc) => (
 					<Marker
 						key={inc.id}
@@ -673,11 +869,17 @@ function IncidentMarkers({
 						icon={(() => {
 							const isSelected = inc.id === selectedId;
 							const cached = iconCacheRef.current.get(inc.id);
-							if (cached && cached.selected === isSelected) {
+							if (cached && cached.selected === isSelected)
 								return cached.icon;
-							}
-							const icon = makeIncidentIcon(inc.category, isSelected, false);
-							iconCacheRef.current.set(inc.id, { selected: isSelected, icon });
+							const icon = makeIncidentIcon(
+								inc.category,
+								isSelected,
+								false,
+							);
+							iconCacheRef.current.set(inc.id, {
+								selected: isSelected,
+								icon,
+							});
 							return icon;
 						})()}
 						zIndexOffset={10000}
@@ -690,36 +892,159 @@ function IncidentMarkers({
 	);
 }
 
-function SelectedIncidentFollower({
-	incidents,
-	selectedId,
-}: {
-	incidents: Incident[];
-	selectedId: string | null;
-}) {
-	const map = useMap();
-	const lastIdRef = useRef<string | null>(null);
+// ── Persistence ───────────────────────────────────────────────────────────────
 
-	useEffect(() => {
-		if (selectedId === lastIdRef.current) return;
-		lastIdRef.current = selectedId;
+const INCIDENT_ARCHETYPES: IncidentArchetype[] = [
+	"crime",
+	"fire_rescue",
+	"medical",
+	"disaster",
+	"traffic",
+];
 
-		if (!selectedId) return;
+function normalizeIncidentArchetype(c: unknown): IncidentArchetype {
+	if (c === "fire" || c === "fire_rescue") return "fire_rescue";
+	if (c === "robbery" || c === "crime") return "crime";
+	if (c === "medical") return "medical";
+	if (
+		typeof c === "string" &&
+		INCIDENT_ARCHETYPES.includes(c as IncidentArchetype)
+	) {
+		return c as IncidentArchetype;
+	}
+	return "crime";
+}
 
-		const inc = incidents.find((i) => i.id === selectedId);
-		if (!inc) return;
+function fallbackTypeLabel(archetype: IncidentArchetype): string {
+	switch (archetype) {
+		case "crime":
+			return "Police call";
+		case "fire_rescue":
+			return "Fire / Rescue";
+		case "medical":
+			return "Medical";
+		case "disaster":
+			return "Disaster";
+		case "traffic":
+			return "Traffic";
+		default:
+			return "Incident";
+	}
+}
 
-		const pane = map.getPane("mapPane");
-		if (!pane) return;
+function normalizeIncidentStatus(raw: unknown): IncidentStatus {
+	if (raw === "resolving" || raw === "resolved" || raw === "active")
+		return raw;
+	return "active";
+}
 
-		requestAnimationFrame(() => {
-			const safePane = map.getPane("mapPane");
-			if (!safePane) return;
-			map.setView([inc.lat, inc.lng], map.getZoom(), { animate: false });
-		});
-	}, [incidents, selectedId, map]);
+function parseIncidentResolution(raw: unknown): IncidentResolution | null {
+	if (!raw || typeof raw !== "object") return null;
+	const o = raw as Record<string, unknown>;
+	if (typeof o.success !== "boolean") return null;
+	if (typeof o.adjustedPercent !== "number") return null;
+	if (typeof o.beforeLuckPercent !== "number") return null;
+	if (typeof o.rolled !== "number") return null;
+	const base: IncidentResolution = {
+		success: o.success,
+		adjustedPercent: o.adjustedPercent,
+		beforeLuckPercent: o.beforeLuckPercent,
+		rolled: o.rolled,
+	};
+	if (typeof o.baseChancePercent === "number")
+		base.baseChancePercent = o.baseChancePercent;
+	if (typeof o.resourceMultiplier === "number")
+		base.resourceMultiplier = o.resourceMultiplier;
+	if (typeof o.buffMultiplier === "number")
+		base.buffMultiplier = o.buffMultiplier;
+	if (typeof o.vigilanteMultiplier === "number")
+		base.vigilanteMultiplier = o.vigilanteMultiplier;
+	if (typeof o.avgArchetypeFit === "number")
+		base.avgArchetypeFit = o.avgArchetypeFit;
+	if (typeof o.staffingSupportMultiplier === "number")
+		base.staffingSupportMultiplier = o.staffingSupportMultiplier;
+	if (typeof o.gearPresenceMultiplier === "number")
+		base.gearPresenceMultiplier = o.gearPresenceMultiplier;
+	if (typeof o.luckDeltaPercent === "number")
+		base.luckDeltaPercent = o.luckDeltaPercent;
+	return base;
+}
 
-	return null;
+function parseStoredIncident(raw: unknown): Incident | null {
+	if (!raw || typeof raw !== "object") return null;
+	const o = raw as Record<string, unknown>;
+	if (typeof o.id !== "string") return null;
+	if (typeof o.lat !== "number" || typeof o.lng !== "number") return null;
+	const status = normalizeIncidentStatus(o.status);
+	if (status !== "active" && status !== "resolving" && status !== "resolved")
+		return null;
+	if (typeof o.title !== "string" || typeof o.summary !== "string")
+		return null;
+	if (typeof o.createdAt !== "number" || typeof o.expiresAt !== "number")
+		return null;
+	if (typeof o.successChance !== "number") return null;
+	const category = normalizeIncidentArchetype(o.category);
+	const typeLabel =
+		typeof o.typeLabel === "string" && o.typeLabel.length > 0
+			? o.typeLabel
+			: fallbackTypeLabel(category);
+	const deployedResourceIds = Array.isArray(o.deployedResourceIds)
+		? (o.deployedResourceIds as unknown[]).filter(
+			(x): x is string => typeof x === "string",
+		)
+		: undefined;
+	const deployedVigilanteIds = Array.isArray(o.deployedVigilanteIds)
+		? (o.deployedVigilanteIds as unknown[]).filter(
+			(x): x is string => typeof x === "string",
+		)
+		: undefined;
+	const resolution = parseIncidentResolution(o.resolution);
+	return {
+		id: o.id,
+		category,
+		typeLabel,
+		status,
+		lat: o.lat,
+		lng: o.lng,
+		title: o.title,
+		summary: o.summary,
+		createdAt: o.createdAt,
+		expiresAt: o.expiresAt,
+		successChance: o.successChance,
+		deployedResourceIds:
+			deployedResourceIds && deployedResourceIds.length > 0
+				? deployedResourceIds
+				: undefined,
+		deployedVigilanteIds:
+			deployedVigilanteIds && deployedVigilanteIds.length > 0
+				? deployedVigilanteIds
+				: undefined,
+		resolution: resolution ?? undefined,
+	};
+}
+
+function mergeResourcePool(
+	partial: unknown,
+): Record<string, ResourcePoolEntry> {
+	const merged: Record<string, ResourcePoolEntry> = {
+		...DEFAULT_RESOURCE_POOL,
+	};
+	if (!partial || typeof partial !== "object") return merged;
+	for (const [k, v] of Object.entries(partial)) {
+		if (!v || typeof v !== "object") continue;
+		const e = v as Record<string, unknown>;
+		if (typeof e.qty !== "number" || typeof e.deployed !== "number") continue;
+		const qty = Math.max(0, e.qty);
+		merged[k] = {
+			qty,
+			deployed: Math.max(0, Math.min(e.deployed, qty)),
+		};
+	}
+	return merged;
+}
+
+function isOngoingIncident(i: Incident): boolean {
+	return i.status === "active" || i.status === "resolving";
 }
 
 function initialState(): GameState {
@@ -729,9 +1054,14 @@ function initialState(): GameState {
 		incidents: [],
 		showIncidentPanel: true,
 		showMinigamePanel: false,
+		showPolicePanel: true,
 		showInventoryPanel: true,
 		ownedVigilanteIds: ["bruce", "parya"],
 		recruitLeads: [],
+		resourcePool: { ...DEFAULT_RESOURCE_POOL },
+		vigilanteInjuryUntil: {},
+		careerStats: { ...DEFAULT_CAREER_STATS },
+		purchasedBuffIds: mergePurchasedBuffIds(undefined),
 	};
 }
 
@@ -749,7 +1079,11 @@ function loadState(saveKey: string): GameState {
 				typeof p.selectedIncidentId === "string"
 					? p.selectedIncidentId
 					: null,
-			incidents: Array.isArray(p.incidents) ? (p.incidents as Incident[]) : [],
+			incidents: Array.isArray(p.incidents)
+				? p.incidents
+					.map(parseStoredIncident)
+					.filter((x): x is Incident => x !== null)
+				: [],
 			showIncidentPanel:
 				typeof p.showIncidentPanel === "boolean"
 					? p.showIncidentPanel
@@ -758,6 +1092,10 @@ function loadState(saveKey: string): GameState {
 				typeof p.showMinigamePanel === "boolean"
 					? p.showMinigamePanel
 					: false,
+			showPolicePanel:
+				typeof p.showPolicePanel === "boolean"
+					? p.showPolicePanel
+					: true,
 			showInventoryPanel:
 				typeof p.showInventoryPanel === "boolean"
 					? p.showInventoryPanel
@@ -768,6 +1106,13 @@ function loadState(saveKey: string): GameState {
 			recruitLeads: Array.isArray(p.recruitLeads)
 				? (p.recruitLeads as RecruitLead[])
 				: [],
+			resourcePool: mergeResourcePool(p.resourcePool),
+			vigilanteInjuryUntil: pruneExpiredInjuries(
+				p.vigilanteInjuryUntil as Record<string, number> | undefined,
+				Date.now(),
+			),
+			careerStats: mergeCareerStats(p.careerStats),
+			purchasedBuffIds: mergePurchasedBuffIds(p.purchasedBuffIds),
 		};
 	} catch {
 		return initialState();
@@ -779,36 +1124,76 @@ function saveState(saveKey: string, state: GameState) {
 }
 
 export default function StreetMapScene({
-										   saveKey,
-										   mode = "singleplayer",
-										   sessionId,
-									   }: Props) {
-	const [state, setState] = useState<GameState>(() => initialState());
-	const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
-	const [isHost, setIsHost] = useState(false);
+  saveKey,
+  saveSlot,
+  cloudSync,
+  mode = "singleplayer",
+  sessionId,
+}: Props) {
+  const [state, setState] = useState<GameState>(() => loadState(saveKey));
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
-	const [selectedRecruitLeadId, setSelectedRecruitLeadId] = useState<string | null>(null);
-	const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<string | null>(null);
-	const [overlayMode, setOverlayMode] = useState<OverlayMode>("recruit");
+  const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
+  const [isHost, setIsHost] = useState(false);
 
-	const [dialogue, setDialogue] = useState<DialogueState>(null);
-	const [showHomebasePanel, setShowHomebasePanel] = useState(false);
-	const [showVettingModal, setShowVettingModal] = useState(false);
+  const [selectedRecruitId, setSelectedRecruitId] = useState<string | null>(null);
+  const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<string | null>(null);
+
+  const [showExitingModal, setShowExitingModal] = useState(false);
+  const [dialogue, setDialogue] = useState<DialogueState>(null);
+  const [overlayMode, setOverlayMode] = useState<OverlayMode>("recruit");
+
+  const [chanceRollOverlay, setChanceRollOverlay] = useState<{
+    incidentId: string;
+    rolled: number;
+    adjustedPercent: number;
+    beforeLuckPercent: number;
+    success: boolean;
+    phase: "rolling" | "outcome";
+    hadDeployedGear: boolean;
+    breakdown: DispatchRollBreakdown;
+    contextLabel: string;
+  } | null>(null);
+
+  const resolveIncidentTimeoutRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cloud sync: Supabase upsert while playing (plus pagehide / unmount).
+  const CLOUD_SYNC_INTERVAL_MS = 60_000;
 
 	const helperBase =
-		STATIC_CHARACTER_BASES.find((p) => p.id === "cit-helper") ?? STATIC_CHARACTER_BASES[0];
-	const diazBase =
-		STATIC_CHARACTER_BASES.find((p) => p.id === "cop-diaz") ?? STATIC_CHARACTER_BASES[0];
+		STATIC_CHARACTER_BASES.find((p) => p.id === "cit-helper") ??
+		STATIC_CHARACTER_BASES[0];
 
 	const [helperPos, setHelperPos] = useState({
 		lat: helperBase.lat,
 		lng: helperBase.lng,
 	});
+	const [policeRenderItems, setPoliceRenderItems] = useState<PoliceRenderItem[]>(
+		() =>
+			STATIC_CHARACTER_BASES.filter(
+				(pin) => pin.kind === "police",
+			).map((pin) => ({
+				pinId: pin.id as PoliceRenderItem["pinId"],
+				name: pin.name,
+				initial: pin.initial,
+				lat: pin.lat,
+				lng: pin.lng,
+				mode: "patrolling",
+				visiblePath: [],
+				assignedIncidentId: null,
+			})),
+	);
+	const [policeEtaItems, setPoliceEtaItems] = useState<PoliceEtaItem[]>([]);
 
-	const [diazPos, setDiazPos] = useState({
-		lat: diazBase.lat,
-		lng: diazBase.lng,
-	});
+	const levelBoundsRef = useRef<Map<number, LatLngBounds>>(new Map());
+	const spawnPlacesByLevelRef = useRef<Map<number, OsmPlace[]>>(new Map());
+	/** Incremented per level on each new bounds+fetch so stale responses are ignored. */
+	const placesFetchGenRef = useRef<Map<number, number>>(new Map());
+	const placesAbortByLevelRef = useRef<Map<number, AbortController>>(
+		new Map(),
+	);
 
 	useEffect(() => {
 		if (mode !== "multiplayer" || !sessionId) return;
@@ -883,20 +1268,133 @@ export default function StreetMapScene({
 	}, [mode, sessionId]);
 
 	useEffect(() => {
-		if (mode !== "singleplayer" || !saveKey) return;
-		setState(loadState(saveKey));
-	}, [mode, saveKey]);
+  if (mode !== "singleplayer" || !saveKey) return;
+  setState(loadState(saveKey));
+}, [mode, saveKey]);
+
+useEffect(() => {
+  if (mode !== "singleplayer" || !saveKey) return;
+  saveState(saveKey, state);
+  // Game JSON lives at `saveKey`; slot meta (incl. menu "last updated") lives at `keyForSlot(saveSlot)`.
+  if (saveSlot) touchSave(saveSlot);
+}, [mode, saveKey, saveSlot, state]);
+
+const pushCloudToServer = useCallback(async () => {
+  if (!cloudSync) return;
+  if (cloudPushInFlightRef.current) return;
+  cloudPushInFlightRef.current = true;
+  const slot: SaveSlotId = {
+    scope: "cloud",
+    index: cloudSync.slotIndex,
+    userId: cloudSync.userId,
+  };
+  try {
+    const meta = readSave(slot);
+    const title = meta?.meta.title ?? `Cloud Slot ${cloudSync.slotIndex}`;
+    const ok = await upsertGameSave({
+      userId: cloudSync.userId,
+      slotIndex: cloudSync.slotIndex,
+      title,
+      state: stateRef.current as unknown as Record<string, unknown>,
+    });
+    if (ok) {
+      markCloudFlush(cloudSync.userId, cloudSync.slotIndex);
+      touchSave(slot);
+    }
+  } finally {
+    cloudPushInFlightRef.current = false;
+  }
+}, [cloudSync]);
 
 	useEffect(() => {
-		if (mode !== "singleplayer" || !saveKey) return;
-		saveState(saveKey, state);
-	}, [mode, saveKey, state]);
+		if (!cloudSync) return;
+		const id = window.setInterval(() => {
+			void pushCloudToServer();
+		}, CLOUD_SAVE_INTERVAL_MS);
+		return () => clearInterval(id);
+	}, [cloudSync, pushCloudToServer]);
 
-	const levelBoundsRef = useRef<Map<number, LatLngBounds>>(new Map());
+	useEffect(() => {
+		if (!cloudSync) return;
+		const onPageHide = () => {
+			void pushCloudToServer();
+		};
+		window.addEventListener("pagehide", onPageHide);
+		return () => {
+			window.removeEventListener("pagehide", onPageHide);
+			void pushCloudToServer();
+		};
+	}, [cloudSync, pushCloudToServer]);
 
-	const handleBoundsReady = (level: number, bounds: LatLngBounds) => {
-		levelBoundsRef.current.set(level, bounds);
-	};
+	useEffect(() => {
+		setDeployModalOpen(false);
+		setChanceRollOverlay(null);
+	}, [state.selectedIncidentId]);
+
+	useEffect(() => {
+		return () => {
+			if (resolveIncidentTimeoutRef.current) {
+				clearTimeout(resolveIncidentTimeoutRef.current);
+			}
+		};
+	}, []);
+
+	// Called by ZoomController each time the active level settles.
+	// Aborts any in-flight fetch for that tier and only applies the latest result.
+	const handleBoundsReady = useCallback(
+		(level: number, bounds: LatLngBounds) => {
+			levelBoundsRef.current.set(level, bounds);
+
+			const prevAbort = placesAbortByLevelRef.current.get(level);
+			prevAbort?.abort();
+			const ac = new AbortController();
+			placesAbortByLevelRef.current.set(level, ac);
+
+			const gen = (placesFetchGenRef.current.get(level) ?? 0) + 1;
+			placesFetchGenRef.current.set(level, gen);
+
+			const south = bounds.getSouth();
+			const west = bounds.getWest();
+			const north = bounds.getNorth();
+			const east = bounds.getEast();
+			const params = new URLSearchParams({
+				south: String(south),
+				west: String(west),
+				north: String(north),
+				east: String(east),
+			});
+
+			void fetch(`/api/osm/places?${params.toString()}`, {
+				signal: ac.signal,
+			})
+				.then(async (r) => {
+					if (placesFetchGenRef.current.get(level) !== gen) return;
+					const data = (r.ok ? await r.json() : { places: [] }) as {
+						places?: OsmPlace[];
+					};
+					if (placesFetchGenRef.current.get(level) !== gen) return;
+					spawnPlacesByLevelRef.current.set(
+						level,
+						Array.isArray(data.places) ? data.places : [],
+					);
+				})
+				.catch((err: unknown) => {
+					if (
+						err &&
+						typeof err === "object" &&
+						"name" in err &&
+						(err as { name?: string }).name === "AbortError"
+					) {
+						return;
+					}
+					if (placesFetchGenRef.current.get(level) !== gen) return;
+					spawnPlacesByLevelRef.current.set(level, []);
+				});
+		},
+		[],
+	);
+
+	// ── Incident helpers ──────────────────────────────────────────────────────
 
 	const expireIncident = async (id: string) => {
 		if (mode === "multiplayer" && sessionId) {
@@ -906,6 +1404,10 @@ export default function StreetMapScene({
 
 		setState((s) => ({
 			...s,
+			careerStats: {
+				...s.careerStats,
+				incidentsExpired: s.careerStats.incidentsExpired + 1,
+			},
 			selectedIncidentId:
 				s.selectedIncidentId === id ? null : s.selectedIncidentId,
 			incidents: s.incidents.filter((i) => i.id !== id),
@@ -957,9 +1459,7 @@ export default function StreetMapScene({
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
 		setDialogue(null);
-		setShowHomebasePanel(false);
 		setShowVettingModal(false);
-
 		setState((s) => {
 			if (s.selectedIncidentId === id && s.showIncidentPanel) {
 				return {
@@ -985,12 +1485,8 @@ export default function StreetMapScene({
 
 	const handleRecruitSelect = (lead: RecruitLead) => {
 		setDialogue(null);
-		setShowHomebasePanel(false);
 		setShowVettingModal(false);
-		setState((s) => ({
-			...s,
-			selectedIncidentId: null,
-		}));
+		setState((s) => ({ ...s, selectedIncidentId: null }));
 		setOverlayMode("recruit");
 		setSelectedOwnedVigilanteId(null);
 		setSelectedRecruitLeadId(lead.id);
@@ -999,26 +1495,27 @@ export default function StreetMapScene({
 	const handleOwnedVigilanteSelect = (vigilanteId: string) => {
 		setDialogue(null);
 		setShowVettingModal(false);
+		setState((s) => ({ ...s, selectedIncidentId: null }));
 		setOverlayMode("owned");
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(vigilanteId);
 	};
 
 	const handleCharacterSelect = (pin: CharacterPin) => {
-		setState((s) => ({
-			...s,
-			selectedIncidentId: null,
-		}));
+		setState((s) => ({ ...s, selectedIncidentId: null }));
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
-		setShowHomebasePanel(false);
 		setShowVettingModal(false);
+
+		if (pin.kind === "vigilante") {
+			handleOwnedVigilanteSelect(pin.id);
+			return;
+		}
 
 		if (pin.kind === "citizen") {
 			const citizen =
 				NPC_DIALOGUE.citizens.find((c) => c.name === pin.name) ??
 				NPC_DIALOGUE.citizens[0];
-
 			setDialogue({
 				name: citizen.name,
 				role: citizen.role,
@@ -1041,7 +1538,6 @@ export default function StreetMapScene({
 		const officer =
 			NPC_DIALOGUE.police.find((p) => p.name === pin.name) ??
 			NPC_DIALOGUE.police[0];
-
 		setDialogue({
 			name: officer.name,
 			role: officer.role,
@@ -1050,87 +1546,280 @@ export default function StreetMapScene({
 		});
 	};
 
-	const handleHomebaseClick = () => {
-		setDialogue(null);
-		setSelectedRecruitLeadId(null);
-		setSelectedOwnedVigilanteId(null);
-		setShowVettingModal(false);
-		setState((s) => ({
-			...s,
-			selectedIncidentId: null,
-		}));
-		setShowHomebasePanel((v) => !v);
-	};
-
 	const handleHireSelected = () => {
-		const lead = state.recruitLeads.find((r) => r.id === selectedRecruitLeadId);
+		const lead = state.recruitLeads.find(
+			(r) => r.id === selectedRecruitLeadId,
+		);
 		if (!lead) return;
-
-		setState((s) => ({
-			...s,
-			ownedVigilanteIds: s.ownedVigilanteIds.includes(lead.vigilanteId)
-				? s.ownedVigilanteIds
-				: [...s.ownedVigilanteIds, lead.vigilanteId],
-			recruitLeads: s.recruitLeads.filter((r) => r.id !== lead.id),
-		}));
-
+		setState((s) => {
+			const alreadyOwned = s.ownedVigilanteIds.includes(lead.vigilanteId);
+			return {
+				...s,
+				ownedVigilanteIds: alreadyOwned
+					? s.ownedVigilanteIds
+					: [...s.ownedVigilanteIds, lead.vigilanteId],
+				recruitLeads: s.recruitLeads.filter((r) => r.id !== lead.id),
+				careerStats: alreadyOwned
+					? s.careerStats
+					: {
+							...s.careerStats,
+							vigilantesRecruited:
+								s.careerStats.vigilantesRecruited + 1,
+						},
+			};
+		});
 		setSelectedRecruitLeadId(null);
 		setShowVettingModal(false);
-		setShowHomebasePanel(true);
 	};
 
+	const handleDeployConfirm = (payload: {
+		vigilanteIds: string[];
+		resourceIds: string[];
+	}) => {
+		const id = state.selectedIncidentId;
+		if (!id) return;
+		const inc = state.incidents.find((i) => i.id === id);
+		if (!inc || inc.status !== "active") return;
+		if (payload.vigilanteIds.length < 1) return;
+		if (
+			!payload.vigilanteIds.every((vid) =>
+				state.ownedVigilanteIds.includes(vid),
+			)
+		) {
+			return;
+		}
+		if (!canStageDeployment(state.resourcePool, payload.resourceIds))
+			return;
+
+		const assignedVigs = vigilantes.filter((v) =>
+			payload.vigilanteIds.includes(v.id),
+		);
+		const rollOutcome = computeIncidentRollOutcome({
+			baseChancePercent: inc.successChance,
+			archetype: inc.category,
+			vigilantes: assignedVigs.map((v) => ({ stats: v.stats })),
+			resourceIds: payload.resourceIds,
+			buffIds: [],
+		});
+
+		if (resolveIncidentTimeoutRef.current) {
+			clearTimeout(resolveIncidentTimeoutRef.current);
+		}
+		setDeployModalOpen(false);
+		setChanceRollOverlay({
+			incidentId: id,
+			rolled: rollOutcome.rolled,
+			adjustedPercent: rollOutcome.adjustedPercent,
+			beforeLuckPercent: rollOutcome.beforeLuckPercent,
+			success: rollOutcome.success,
+			phase: "rolling",
+			hadDeployedGear: payload.resourceIds.length > 0,
+			breakdown: {
+				baseChancePercent: rollOutcome.baseChancePercent,
+				resourceMultiplier: rollOutcome.resourceMultiplier,
+				buffMultiplier: rollOutcome.buffMultiplier,
+				vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
+				avgArchetypeFit: rollOutcome.avgArchetypeFit,
+				staffingSupportMultiplier: rollOutcome.staffingSupportMultiplier,
+				gearPresenceMultiplier: rollOutcome.gearPresenceMultiplier,
+				luckDeltaPercent: rollOutcome.luckDeltaPercent,
+			},
+			contextLabel: `${inc.typeLabel} · ${fallbackTypeLabel(inc.category)}`,
+		});
+		setState((s) => {
+			const i = s.incidents.find((x) => x.id === id);
+			if (!i || i.status !== "active") return s;
+			const pool = applyDeployment(s.resourcePool, payload.resourceIds);
+			return {
+				...s,
+				resourcePool: pool,
+				incidents: s.incidents.map((x) =>
+					x.id === id
+						? {
+							...x,
+							status: "resolving" as const,
+							deployedResourceIds: [...payload.resourceIds],
+							deployedVigilanteIds: [...payload.vigilanteIds],
+						}
+						: x,
+				),
+			};
+		});
+		const RESOLVE_MS = 2600;
+		resolveIncidentTimeoutRef.current = setTimeout(() => {
+			setState((s) => {
+				const cur = s.incidents.find((x) => x.id === id);
+				if (!cur || cur.status !== "resolving") return s;
+				const deployed = cur.deployedResourceIds ?? [];
+				let pool = s.resourcePool;
+				if (deployed.length > 0) {
+					if (rollOutcome.success) {
+						pool = returnDeployment(pool, deployed);
+					} else {
+						pool = forfeitDeployment(pool, deployed);
+					}
+				}
+				return {
+					...s,
+					resourcePool: pool,
+					careerStats: {
+						...s.careerStats,
+						dispatchesCompleted:
+							s.careerStats.dispatchesCompleted + 1,
+						incidentsResolvedSuccess:
+							s.careerStats.incidentsResolvedSuccess +
+							(rollOutcome.success ? 1 : 0),
+						incidentsResolvedFailure:
+							s.careerStats.incidentsResolvedFailure +
+							(rollOutcome.success ? 0 : 1),
+					},
+					incidents: s.incidents.map((x) =>
+						x.id === id
+							? {
+								...x,
+								status: "resolved" as const,
+								deployedResourceIds: [],
+								resolution: {
+									success: rollOutcome.success,
+									adjustedPercent:
+										rollOutcome.adjustedPercent,
+									beforeLuckPercent:
+										rollOutcome.beforeLuckPercent,
+									rolled: rollOutcome.rolled,
+									baseChancePercent:
+										rollOutcome.baseChancePercent,
+									resourceMultiplier:
+										rollOutcome.resourceMultiplier,
+									buffMultiplier:
+										rollOutcome.buffMultiplier,
+									vigilanteMultiplier:
+										rollOutcome.vigilanteMultiplier,
+									avgArchetypeFit:
+										rollOutcome.avgArchetypeFit,
+									staffingSupportMultiplier:
+										rollOutcome.staffingSupportMultiplier,
+									gearPresenceMultiplier:
+										rollOutcome.gearPresenceMultiplier,
+									luckDeltaPercent:
+										rollOutcome.luckDeltaPercent,
+								},
+							}
+							: x,
+					),
+				};
+			});
+			setChanceRollOverlay((prev) =>
+				prev && prev.incidentId === id
+					? { ...prev, phase: "outcome" }
+					: prev,
+			);
+		}, RESOLVE_MS);
+	};  
+    
+	const dismissResolvedIncident = (incidentId: string) => {
+		setState((s) => {
+			const inc = s.incidents.find((i) => i.id === incidentId);
+			let pool = s.resourcePool;
+			if (inc?.deployedResourceIds?.length) {
+				pool = returnDeployment(pool, inc.deployedResourceIds);
+			}
+			return {
+				...s,
+				resourcePool: pool,
+				selectedIncidentId:
+					s.selectedIncidentId === incidentId
+						? null
+						: s.selectedIncidentId,
+				incidents: s.incidents.filter((i) => i.id !== incidentId),
+			};
+		});
+	};
+
+	// ── Incident spawner — random POI, no grid ────────────────────────────────
 	useEffect(() => {
 		if (inventorySorterOpen) return;
 
 		let alive = true;
-		const MAX_ACTIVE = 20;
-		const SPAWN_INTERVAL_MS = 20_000;
+		const MAX_ACTIVE = 100;
+		const SPAWN_INTERVAL_MS = 5_000;
 
 		const scheduleNext = () => {
 			if (!alive) return;
 			window.setTimeout(() => {
 				if (!alive) return;
-				if (mode === "multiplayer" && !isHost) {
-					scheduleNext();
-					return;
-				}
-
 				setState((s) => {
 					const activeCount = s.incidents.filter(
 						(i) => i.status === "active",
 					).length;
 					if (activeCount >= MAX_ACTIVE) return s;
 
-					const bounds =
-						levelBoundsRef.current.get(s.level) ??
-						levelBoundsRef.current.get(s.level - 1) ??
-						levelBoundsRef.current.get(s.level + 1) ??
-						[...levelBoundsRef.current.values()][0];
-
+					const bounds = levelBoundsRef.current.get(s.level);
 					if (!bounds) return s;
 
-					const { lat, lng } = sampleInBounds(bounds);
-					const newIncident = makeIncident(lat, lng);
+          const places =
+            spawnPlacesByLevelRef.current.get(s.level) ?? [];
+          const place = pickSpatiallyUniformPoi(places, bounds);
 
-					if (mode === "multiplayer" && sessionId) {
-						void insertSessionMarker({
-							sessionId,
-							markerId: newIncident.id,
-							kind: "incident",
-							x: newIncident.lat,
-							y: newIncident.lng,
-							title: newIncident.title,
-							details: newIncident.summary,
-							createdAt: new Date(newIncident.createdAt).toISOString(),
-							expiresAt: new Date(newIncident.expiresAt).toISOString(),
-							status: "active",
-						});
-						return s;
-					}
+          if (place) {
+            const newIncident = makeIncident(place.lat, place.lng, place);
 
-					return {
-						...s,
-						incidents: [...s.incidents, newIncident],
+            if (mode === "multiplayer" && sessionId) {
+              void insertSessionMarker({
+                sessionId,
+                markerId: newIncident.id,
+                kind: "incident",
+                x: newIncident.lat,
+                y: newIncident.lng,
+                title: newIncident.title,
+                details: newIncident.summary,
+                createdAt: new Date(newIncident.createdAt).toISOString(),
+                expiresAt: new Date(newIncident.expiresAt).toISOString(),
+                status: "active",
+              });
+              return s;
+            }
+
+            return {
+              ...s,
+              incidents: [...s.incidents, newIncident],
+            };
+          }
+
+          const fallbackPoint = sampleInBounds(bounds);
+          const fallbackPlace: OSMPlace = {
+            name: "Unknown location",
+            lat: fallbackPoint.lat,
+            lng: fallbackPoint.lng,
+            kind: "fallback",
+          };
+
+          const newIncident = makeIncident(
+            fallbackPlace.lat,
+            fallbackPlace.lng,
+            fallbackPlace,
+          );
+
+          if (mode === "multiplayer" && sessionId) {
+            void insertSessionMarker({
+              sessionId,
+              markerId: newIncident.id,
+              kind: "incident",
+              x: newIncident.lat,
+              y: newIncident.lng,
+              title: newIncident.title,
+              details: newIncident.summary,
+              createdAt: new Date(newIncident.createdAt).toISOString(),
+              expiresAt: new Date(newIncident.expiresAt).toISOString(),
+              status: "active",
+            });
+            return s;
+          }
+
+          return {
+            ...s,
+            incidents: [...s.incidents, newIncident],
+          };  
+        
 					};
 				});
 				scheduleNext();
@@ -1143,6 +1832,7 @@ export default function StreetMapScene({
 		};
 	}, [inventorySorterOpen, mode, isHost, sessionId]);
 
+	// ── Recruit lead spawner ──────────────────────────────────────────────────
 	useEffect(() => {
 		let alive = true;
 		const MAX_RECRUITS = 3;
@@ -1155,51 +1845,60 @@ export default function StreetMapScene({
 				setState((s) => {
 					if (s.recruitLeads.length >= MAX_RECRUITS) return s;
 
-					const bounds =
-						levelBoundsRef.current.get(s.level) ??
-						levelBoundsRef.current.get(s.level - 1) ??
-						levelBoundsRef.current.get(s.level + 1) ??
-						[...levelBoundsRef.current.values()][0];
-
+					const bounds = levelBoundsRef.current.get(s.level);
 					if (!bounds) return s;
 
 					const unavailable = new Set([
 						...s.ownedVigilanteIds,
 						...s.recruitLeads.map((r) => r.vigilanteId),
 					]);
-
-					const available = vigilantes.filter((v) => !unavailable.has(v.id));
+					const available = vigilantes.filter(
+						(v) => !unavailable.has(v.id),
+					);
 					if (available.length === 0) return s;
 
-					const undercoverAvailable = available.filter((v) => v.isUndercover);
-					const normalAvailable = available.filter((v) => !v.isUndercover);
-
-					const undercoverAlreadyOnMap = s.recruitLeads.some((lead) => {
-						const match = vigilantes.find((v) => v.id === lead.vigilanteId);
-						return match?.isUndercover;
-					});
+					const undercoverAvailable = available.filter(
+						(v) => v.isUndercover,
+					);
+					const normalAvailable = available.filter(
+						(v) => !v.isUndercover,
+					);
+					const undercoverAlreadyOnMap = s.recruitLeads.some(
+						(lead) => {
+							const match = vigilantes.find(
+								(v) => v.id === lead.vigilanteId,
+							);
+							return match?.isUndercover;
+						},
+					);
 
 					let chosen;
-
-					if (!undercoverAlreadyOnMap && undercoverAvailable.length > 0) {
-						const roll = Math.random();
-
-						if (roll < 0.45) {
-							chosen = randomFrom(undercoverAvailable);
-						} else {
-							chosen = randomFrom(
-								normalAvailable.length > 0 ? normalAvailable : available,
-							);
-						}
+					if (
+						!undercoverAlreadyOnMap &&
+						undercoverAvailable.length > 0
+					) {
+						chosen =
+							Math.random() < 0.45
+								? randomFrom(undercoverAvailable)
+								: randomFrom(
+									normalAvailable.length > 0
+										? normalAvailable
+										: available,
+								);
 					} else {
 						chosen = randomFrom(
-							normalAvailable.length > 0 ? normalAvailable : available,
+							normalAvailable.length > 0
+								? normalAvailable
+								: available,
 						);
 					}
 
 					return {
 						...s,
-						recruitLeads: [...s.recruitLeads, makeRecruitLead(chosen.id, bounds)],
+						recruitLeads: [
+							...s.recruitLeads,
+							makeRecruitLead(chosen.id, bounds),
+						],
 					};
 				});
 				scheduleNext();
@@ -1212,54 +1911,67 @@ export default function StreetMapScene({
 		};
 	}, []);
 
+	// ── Expiry ticker ─────────────────────────────────────────────────────────
 	useEffect(() => {
 		if (inventorySorterOpen) return;
 
 		const id = window.setInterval(() => {
+
 			const now = Date.now();
 
-			if (mode === "multiplayer" && sessionId) {
-				const expiredIds = state.incidents
-					.filter((i) => i.status === "active" && now >= i.expiresAt)
-					.map((i) => i.id);
+      if (mode === "multiplayer" && sessionId) {
+        const expiredIds = state.incidents
+          .filter((i) => i.status === "active" && now >= i.expiresAt)
+          .map((i) => i.id);
 
-				expiredIds.forEach((incidentId) => {
-					void deleteSessionMarkerByMarkerId(sessionId, incidentId);
-				});
+        expiredIds.forEach((incidentId) => {
+          void deleteSessionMarkerByMarkerId(sessionId, incidentId);
+        });
 
-				if (
-					selectedRecruitLeadId &&
-					!state.recruitLeads.some((r) => r.id === selectedRecruitLeadId)
-				) {
-					setSelectedRecruitLeadId(null);
-				}
+        if (
+          selectedRecruitId &&
+          !state.recruitLeads.some((r) => r.id === selectedRecruitId)
+        ) {
+          setSelectedRecruitId(null);
+        }
 
-				return;
-			}
+        return;
+      }
 
-			setState((s) => {
+      setState((s) => {
+        const now = Date.now();
 				const expiredIncidentIds = new Set(
 					s.incidents
-						.filter((i) => i.status === "active" && now >= i.expiresAt)
+						.filter(
+							(i) => i.status === "active" && now >= i.expiresAt,
+						)
 						.map((i) => i.id),
 				);
-
 				const expiredRecruitIds = new Set(
-					s.recruitLeads.filter((r) => now >= r.expiresAt).map((r) => r.id),
+					s.recruitLeads
+						.filter((r) => now >= r.expiresAt)
+						.map((r) => r.id),
 				);
-
-				if (expiredIncidentIds.size === 0 && expiredRecruitIds.size === 0) return s;
-
+				if (
+					expiredIncidentIds.size === 0 &&
+					expiredRecruitIds.size === 0
+				)
+					return s;
 				return {
 					...s,
-					selectedIncidentId: expiredIncidentIds.has(s.selectedIncidentId ?? "")
+					selectedIncidentId: expiredIncidentIds.has(
+						s.selectedIncidentId ?? "",
+					)
 						? null
 						: s.selectedIncidentId,
-					incidents: s.incidents.filter((i) => !expiredIncidentIds.has(i.id)),
-					recruitLeads: s.recruitLeads.filter((r) => !expiredRecruitIds.has(r.id)),
+					incidents: s.incidents.filter(
+						(i) => !expiredIncidentIds.has(i.id),
+					),
+					recruitLeads: s.recruitLeads.filter(
+						(r) => !expiredRecruitIds.has(r.id),
+					),
 				};
 			});
-
 			if (
 				selectedRecruitLeadId &&
 				!state.recruitLeads.some((r) => r.id === selectedRecruitLeadId)
@@ -1267,61 +1979,49 @@ export default function StreetMapScene({
 				setSelectedRecruitLeadId(null);
 			}
 		}, 1_000);
-
 		return () => window.clearInterval(id);
 	}, [inventorySorterOpen, selectedRecruitLeadId, state.recruitLeads, state.incidents, mode, sessionId]);
 
+	// ── NPC movement ──────────────────────────────────────────────────────────
 	useEffect(() => {
 		const id = window.setInterval(() => {
 			setHelperPos(() => {
 				const moved = nudgeNearby(helperBase.lat, helperBase.lng);
-				return {
-					lat: moved.lat,
-					lng: moved.lng,
-				};
+				return { lat: moved.lat, lng: moved.lng };
 			});
 		}, 9000);
-
 		return () => window.clearInterval(id);
 	}, [helperBase.lat, helperBase.lng]);
 
-	useEffect(() => {
-		const id = window.setInterval(() => {
-			setDiazPos((prev) => {
-				const activeIncidents = state.incidents.filter((i) => i.status === "active");
+	const incidentCitizenPins = useMemo(() => {
+		const activeIncidents = state.incidents.filter(isOngoingIncident);
 
-				if (activeIncidents.length === 0) {
-					return moveToward(prev, { lat: diazBase.lat, lng: diazBase.lng }, 0.12);
-				}
+		const citizenTemplates = [
+			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-oldman"),
+			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-girl"),
+			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-woman"),
+		].filter(Boolean) as CharacterPin[];
 
-				const nearest = activeIncidents.reduce((best, current) => {
-					const bestDist = distanceSq(prev, { lat: best.lat, lng: best.lng });
-					const currDist = distanceSq(prev, { lat: current.lat, lng: current.lng });
-					return currDist < bestDist ? current : best;
-				});
+		return activeIncidents.slice(0, citizenTemplates.length).map((incident, idx) => {
+			const tpl = citizenTemplates[idx];
+			const stable = stableCitizenPositionAroundIncident(
+				incident.id,
+				{ lat: incident.lat, lng: incident.lng },
+				idx,
+			);
 
-				const movedToward = moveToward(
-					prev,
-					{ lat: nearest.lat, lng: nearest.lng },
-					0.12,
-				);
-
-				const heldBack = pushAwayFromPoint(
-					movedToward,
-					{ lat: nearest.lat, lng: nearest.lng },
-					0.00135,
-				);
-
-				return heldBack;
-			});
-		}, 1400);
-
-		return () => window.clearInterval(id);
-	}, [state.incidents, diazBase.lat, diazBase.lng]);
-
+			return {
+				...tpl,
+				lat: stable.lat,
+				lng: stable.lng,
+			};
+		});
+	}, [state.incidents]);
+	// ── Derived pin list ──────────────────────────────────────────────────────
 	const visibleDynamicPins = useMemo(() => {
-		const activeIncidents = state.incidents.filter((i) => i.status === "active");
-		const evanAvailable = state.recruitLeads.some((lead) => lead.vigilanteId === "familiar-face");
+		const evanAvailable = state.recruitLeads.some(
+			(lead) => lead.vigilanteId === "familiar-face",
+		);
 
 		const helperPin: CharacterPin = {
 			id: "cit-helper",
@@ -1332,66 +2032,62 @@ export default function StreetMapScene({
 			lng: helperPos.lng,
 		};
 
-		const citizenTemplates = [
-			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-oldman"),
-			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-girl"),
-			STATIC_CHARACTER_BASES.find((p) => p.id === "cit-woman"),
-		].filter(Boolean) as CharacterPin[];
-
-		const incidentCitizens: CharacterPin[] = activeIncidents
-			.slice(0, citizenTemplates.length)
-			.map((incident, idx) => {
-				const tpl = citizenTemplates[idx];
-				const near = nudgeNearPoint(incident.lat, incident.lng, 0.0018);
-				const safe = pushAwayFromPoint(
-					near,
-					{ lat: incident.lat, lng: incident.lng },
-					0.00095,
-				);
-				return {
-					...tpl,
-					lat: safe.lat,
-					lng: safe.lng,
-				};
-			});
-
-		const diazPin: CharacterPin = {
-			id: "cop-diaz",
-			name: "Officer Diaz",
-			initial: "D",
+		const policePins: CharacterPin[] = policeRenderItems.map((item) => ({
+			id: item.pinId,
+			name: item.name,
+			initial: item.initial,
 			kind: "police",
-			lat: diazPos.lat,
-			lng: diazPos.lng,
-		};
+			lat: item.lat,
+			lng: item.lng,
+		}));
 
-		const kimBase = STATIC_CHARACTER_BASES.find((p) => p.id === "cop-kim");
-		const chiefBase = STATIC_CHARACTER_BASES.find((p) => p.id === "chief-williams");
+		const ownedRoster = vigilantes.filter((v) =>
+			state.ownedVigilanteIds.includes(v.id),
+		);
+		const ownedPins: CharacterPin[] = ownedRoster.map((v, i) => {
+			const off =
+				OWNED_VIG_MARKER_OFFSETS[i % OWNED_VIG_MARKER_OFFSETS.length];
+			return {
+				id: v.id,
+				name: v.alias,
+				initial: v.name[0]?.toUpperCase() ?? "V",
+				kind: "vigilante",
+				lat: BASE[0] + off.dLat,
+				lng: BASE[1] + off.dLng,
+			};
+		});
 
-		const policePins: CharacterPin[] = [
-			diazPin,
-			...(evanAvailable || !kimBase ? [] : [kimBase]),
-			...(chiefBase ? [chiefBase] : []),
-		];
+		return [helperPin, ...incidentCitizenPins, ...policePins, ...ownedPins];
+	}, [
+		state.recruitLeads,
+		state.ownedVigilanteIds,
+		helperPos,
+		incidentCitizenPins,
+		policeRenderItems,
+	]);
 
-		return [helperPin, ...incidentCitizens, ...policePins];
-	}, [state.incidents, state.recruitLeads, helperPos, diazPos]);
-
-	const zoomConfig = useMemo(() => {
-		const minZoom = LEVELS[LEVELS.length - 1].zoomOut;
-		const maxZoom = LEVELS[0].zoomIn;
-		const initialZoom = levelConfig(state.level).zoomOut;
-		return { minZoom, maxZoom, initialZoom };
-	}, [state.level]);
+	const zoomConfig = useMemo(
+		() => ({
+			minZoom: LEVELS[LEVELS.length - 1].zoomOut,
+			maxZoom: LEVELS[0].zoomIn,
+			initialZoom: levelConfig(state.level).zoomOut,
+		}),
+		[state.level],
+	);
 
 	const selectedRecruitLead = useMemo(
-		() => state.recruitLeads.find((r) => r.id === selectedRecruitLeadId) ?? null,
+		() =>
+			state.recruitLeads.find((r) => r.id === selectedRecruitLeadId) ??
+			null,
 		[state.recruitLeads, selectedRecruitLeadId],
 	);
 
 	const selectedRecruitVigilante = useMemo(
 		() =>
 			selectedRecruitLead
-				? vigilantes.find((v) => v.id === selectedRecruitLead.vigilanteId) ?? null
+				? (vigilantes.find(
+					(v) => v.id === selectedRecruitLead.vigilanteId,
+				) ?? null)
 				: null,
 		[selectedRecruitLead],
 	);
@@ -1399,18 +2095,16 @@ export default function StreetMapScene({
 	const selectedOwnedVigilante = useMemo(
 		() =>
 			selectedOwnedVigilanteId
-				? vigilantes.find((v) => v.id === selectedOwnedVigilanteId) ?? null
+				? (vigilantes.find((v) => v.id === selectedOwnedVigilanteId) ??
+					null)
 				: null,
 		[selectedOwnedVigilanteId],
 	);
 
-	const ownedVigilantes = useMemo(
-		() => vigilantes.filter((v) => state.ownedVigilanteIds.includes(v.id)),
-		[state.ownedVigilanteIds],
-	);
-
 	const activeDossier =
-		overlayMode === "recruit" ? selectedRecruitVigilante : selectedOwnedVigilante;
+		overlayMode === "recruit"
+			? selectedRecruitVigilante
+			: selectedOwnedVigilante;
 
 	const closeDossier = () => {
 		setSelectedRecruitLeadId(null);
@@ -1418,6 +2112,26 @@ export default function StreetMapScene({
 		setShowVettingModal(false);
 	};
 
+	const selectedIncident = useMemo(
+		() =>
+			state.incidents.find((i) => i.id === state.selectedIncidentId) ??
+			null,
+		[state.incidents, state.selectedIncidentId],
+	);
+
+	const incidentPanelRows = useMemo(() => {
+		return [...state.incidents].sort((a, b) => {
+			const rk = (i: Incident) =>
+				i.status === "active" ? 0 : i.status === "resolving" ? 1 : 2;
+			const d = rk(a) - rk(b);
+			if (d !== 0) return d;
+			if (a.id === state.selectedIncidentId) return -1;
+			if (b.id === state.selectedIncidentId) return 1;
+			return a.expiresAt - b.expiresAt;
+		});
+	}, [state.incidents, state.selectedIncidentId]);
+
+	// ── Render ────────────────────────────────────────────────────────────────
 	return (
 		<div className="fixed inset-0">
 			<style>{`
@@ -1433,17 +2147,19 @@ export default function StreetMapScene({
 				.vigilante-leaflet { background: #05070a !important; }
 				.vigilante-incident-icon,
 				.vigilante-character-icon,
-				.vigilante-recruit-icon,
-				.vigilante-homebase-icon { background: none; border: none; }
+				.vigilante-recruit-icon { background: none; border: none; }
 				.vigilante-hide-scrollbar::-webkit-scrollbar { display: none; }
 				.vigilante-hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-				.leaflet-pane.characterPane { z-index: 700 !important; }
+				.leaflet-pane.characterPane { z-index: 930 !important; }
 				.leaflet-pane.incidentPane { z-index: 820 !important; }
-				.leaflet-pane.recruitPane { z-index: 860 !important; }
-				.leaflet-pane.homebasePane { z-index: 880 !important; }
+				.leaflet-pane.recruitPane { z-index: 960 !important; }
+				.leaflet-marker-icon.vigilante-character-icon,
+				.leaflet-marker-icon.vigilante-recruit-icon {
+					pointer-events: auto !important;
+				}
+
 				.vigilante-character-icon > div,
-				.vigilante-recruit-icon > div,
-				.vigilante-homebase-icon > div {
+				.vigilante-recruit-icon > div {
 					cursor: pointer !important;
 					pointer-events: auto !important;
 				}
@@ -1458,10 +2174,6 @@ export default function StreetMapScene({
 					animation-timing-function: cubic-bezier(0.25, 0.1, 0.25, 1);
 					animation-iteration-count: infinite;
 					will-change: box-shadow;
-				}
-				@keyframes vigilante-timer-drain {
-					from { transform: scaleX(1); }
-					to   { transform: scaleX(0); }
 				}
 			`}</style>
 
@@ -1486,29 +2198,48 @@ export default function StreetMapScene({
 					backgroundColor: "#05070a",
 				}}
 			>
-				<ZoomController level={state.level} onBoundsReady={handleBoundsReady} />
+				<ZoomController
+					level={state.level}
+					onBoundsReady={handleBoundsReady}
+				/>
 				<TileLayer
 					url="https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
 					keepBuffer={8}
 					updateWhenZooming
 					updateWhenIdle={false}
 				/>
-
-				<HomebaseMarker onClick={handleHomebaseClick} />
-				<CharacterMarkers pins={visibleDynamicPins} onSelect={handleCharacterSelect} />
-				<RecruitMarkers leads={state.recruitLeads} onSelect={handleRecruitSelect} />
+				<PoliceSystem
+					incidents={state.incidents.map((incident) => ({
+						id: incident.id,
+						lat: incident.lat,
+						lng: incident.lng,
+						status:
+							incident.status === "active"
+								? "active"
+								: incident.status === "resolved"
+									? "resolved"
+									: "resolving",
+						expiresAt: incident.expiresAt,
+					}))}
+					onPoliceRenderUpdate={setPoliceRenderItems}
+					onPoliceEtaUpdate={setPoliceEtaItems}
+				/>
+				<CharacterMarkers
+					pins={visibleDynamicPins}
+					onSelect={handleCharacterSelect}
+				/>
+				<RecruitMarkers
+					leads={state.recruitLeads}
+					onSelect={handleRecruitSelect}
+				/>
 				<IncidentMarkers
 					incidents={state.incidents}
 					selectedId={state.selectedIncidentId}
 					onSelect={handleIncidentSelect}
 				/>
-				<SelectedIncidentFollower
-					incidents={state.incidents}
-					selectedId={state.selectedIncidentId}
-				/>
 			</MapContainer>
 
-			{/* ── Dossier overlay (recruit lead or owned vigilante) ── */}
+			{/* ── Dossier overlay ── */}
 			<AnimatePresence>
 				{activeDossier ? (
 					<>
@@ -1520,28 +2251,37 @@ export default function StreetMapScene({
 							onClick={closeDossier}
 						/>
 						<motion.aside
-							initial={{ opacity: 0, x: overlayMode === "owned" ? 30 : -30, scale: 0.98 }}
+							initial={{
+								opacity: 0,
+								x: overlayMode === "owned" ? 30 : -30,
+								scale: 0.98,
+							}}
 							animate={{ opacity: 1, x: 0, scale: 1 }}
-							exit={{ opacity: 0, x: overlayMode === "owned" ? 24 : -24, scale: 0.98 }}
+							exit={{
+								opacity: 0,
+								x: overlayMode === "owned" ? 24 : -24,
+								scale: 0.98,
+							}}
 							transition={{ duration: 0.2, ease: "easeOut" }}
-							className={`absolute top-6 bottom-6 z-[2010] w-[min(34vw,460px)] min-w-[340px] overflow-hidden rounded-2xl border border-amber-900/40 bg-black/75 text-amber-100 shadow-[0_18px_70px_rgba(0,0,0,0.55)] backdrop-blur-md ${
-								overlayMode === "owned" ? "right-6" : "left-6"
-							}`}
+							className={`absolute top-6 bottom-6 z-[2010] w-[min(34vw,460px)] min-w-[340px] overflow-hidden rounded-2xl border border-amber-900/40 bg-black/75 text-amber-100 shadow-[0_18px_70px_rgba(0,0,0,0.55)] backdrop-blur-md ${overlayMode === "owned" ? "right-6" : "left-6"
+								}`}
 						>
 							<div className="flex h-full flex-col">
 								<div className="flex items-start justify-between border-b border-amber-900/30 px-5 py-4">
 									<div>
 										<div className="text-[11px] uppercase tracking-[0.28em] text-amber-400/70">
-											{overlayMode === "owned" ? "Homebase Dossier" : "Recruit Lead"}
+											{overlayMode === "owned"
+												? "Vigilante dossier"
+												: "Recruit lead"}
 										</div>
 										<h2 className="mt-2 text-2xl font-bold text-amber-100">
 											{activeDossier.alias}
 										</h2>
 										<div className="mt-1 text-sm text-amber-200/60">
-											{activeDossier.name} • {activeDossier.role}
+											{activeDossier.name} •{" "}
+											{activeDossier.role}
 										</div>
 									</div>
-
 									<button
 										type="button"
 										onClick={closeDossier}
@@ -1562,7 +2302,6 @@ export default function StreetMapScene({
 												sizes="140px"
 											/>
 										</div>
-
 										<div className="space-y-3">
 											<div className="flex flex-wrap gap-2">
 												{activeDossier.status ? (
@@ -1570,36 +2309,42 @@ export default function StreetMapScene({
 														{activeDossier.status}
 													</span>
 												) : null}
-												{typeof activeDossier.heat === "number" ? (
+												{typeof activeDossier.heat ===
+													"number" ? (
 													<span className="rounded-full border border-red-900/35 bg-red-950/20 px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-red-300/75">
-														Heat {activeDossier.heat}
+														Heat{" "}
+														{activeDossier.heat}
 													</span>
 												) : null}
 											</div>
-
 											<p className="text-sm leading-6 text-amber-100/75">
-												{activeDossier.bio ?? "Backstory TBD."}
+												{activeDossier.bio ??
+													"Backstory TBD."}
 											</p>
 										</div>
 									</div>
 
 									<div className="mt-6 grid grid-cols-2 gap-3">
-										<div className="rounded-xl border border-amber-900/30 bg-black/25 p-3">
-											<div className="text-[11px] uppercase tracking-[0.2em] text-amber-400/70">Combat</div>
-											<div className="mt-2 text-lg font-bold">{activeDossier.stats.combat}</div>
-										</div>
-										<div className="rounded-xl border border-amber-900/30 bg-black/25 p-3">
-											<div className="text-[11px] uppercase tracking-[0.2em] text-amber-400/70">Stealth</div>
-											<div className="mt-2 text-lg font-bold">{activeDossier.stats.stealth}</div>
-										</div>
-										<div className="rounded-xl border border-amber-900/30 bg-black/25 p-3">
-											<div className="text-[11px] uppercase tracking-[0.2em] text-amber-400/70">Tactics</div>
-											<div className="mt-2 text-lg font-bold">{activeDossier.stats.tactics}</div>
-										</div>
-										<div className="rounded-xl border border-amber-900/30 bg-black/25 p-3">
-											<div className="text-[11px] uppercase tracking-[0.2em] text-amber-400/70">Nerve</div>
-											<div className="mt-2 text-lg font-bold">{activeDossier.stats.nerve}</div>
-										</div>
+										{(
+											[
+												"combat",
+												"stealth",
+												"tactics",
+												"nerve",
+											] as const
+										).map((stat) => (
+											<div
+												key={stat}
+												className="rounded-xl border border-amber-900/30 bg-black/25 p-3"
+											>
+												<div className="text-[11px] uppercase tracking-[0.2em] text-amber-400/70">
+													{stat}
+												</div>
+												<div className="mt-2 text-lg font-bold">
+													{activeDossier.stats[stat]}
+												</div>
+											</div>
+										))}
 									</div>
 
 									<div className="mt-6 rounded-xl border border-amber-900/30 bg-black/25 p-4">
@@ -1607,14 +2352,16 @@ export default function StreetMapScene({
 											Traits
 										</div>
 										<div className="mt-3 flex flex-wrap gap-2">
-											{(activeDossier.traits ?? []).map((trait: string) => (
-												<span
-													key={trait}
-													className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
-												>
-													{trait}
-												</span>
-											))}
+											{(activeDossier.traits ?? []).map(
+												(trait: string) => (
+													<span
+														key={trait}
+														className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
+													>
+														{trait}
+													</span>
+												),
+											)}
 										</div>
 									</div>
 								</div>
@@ -1626,25 +2373,19 @@ export default function StreetMapScene({
 											onClick={closeDossier}
 											className="rounded-xl border border-amber-900/35 bg-black/30 px-4 py-3 text-sm text-amber-200/80 hover:bg-amber-950/20 transition"
 										>
-											Close File
+											Close file
 										</button>
-
 										{overlayMode === "recruit" ? (
 											<button
 												type="button"
-												onClick={() => setShowVettingModal(true)}
+												onClick={() =>
+													setShowVettingModal(true)
+												}
 												className="rounded-xl border border-amber-700/40 bg-amber-950/30 px-5 py-3 text-sm font-semibold text-amber-100 hover:bg-amber-900/35 transition"
 											>
-												Hire Vigilante
+												Hire vigilante
 											</button>
-										) : (
-											<button
-												type="button"
-												className="rounded-xl border border-amber-700/25 bg-black/20 px-5 py-3 text-sm font-semibold text-amber-100/60"
-											>
-												Available at Homebase
-											</button>
-										)}
+										) : null}
 									</div>
 								</div>
 							</div>
@@ -1653,7 +2394,7 @@ export default function StreetMapScene({
 				) : null}
 			</AnimatePresence>
 
-			{/* ── NPC dialogue box ── */}
+			{/* ── NPC dialogue ── */}
 			<AnimatePresence>
 				{dialogue ? (
 					<motion.div
@@ -1676,7 +2417,6 @@ export default function StreetMapScene({
 										/>
 									</div>
 								</div>
-
 								<div className="flex min-h-[202px] flex-1 flex-col justify-between px-5 py-4">
 									<div>
 										<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
@@ -1685,12 +2425,10 @@ export default function StreetMapScene({
 										<div className="mt-1 text-xl font-bold text-amber-100">
 											{dialogue.name}
 										</div>
-
 										<p className="mt-4 text-sm leading-7 text-amber-100/80">
 											{dialogue.text}
 										</p>
 									</div>
-
 									<div className="mt-4 flex items-center justify-end gap-3">
 										<button
 											type="button"
@@ -1707,76 +2445,12 @@ export default function StreetMapScene({
 				) : null}
 			</AnimatePresence>
 
-			{/* ── Homebase panel ── */}
-			<AnimatePresence>
-				{showHomebasePanel && (
-					<motion.aside
-						initial={{ opacity: 0, x: 40 }}
-						animate={{ opacity: 1, x: 0 }}
-						exit={{ opacity: 0, x: 36 }}
-						transition={{ duration: 0.2, ease: "easeOut" }}
-						className="absolute right-0 top-20 bottom-6 z-[1900] w-[360px] max-w-[42vw] rounded-l-2xl border border-r-0 border-amber-900/40 bg-black/70 shadow-[0_18px_70px_rgba(0,0,0,0.55)] backdrop-blur-md"
-					>
-						<div className="flex h-full flex-col">
-							<div className="flex items-center justify-between border-b border-amber-900/30 px-5 py-4">
-								<div className="flex items-center gap-2">
-									<Home className="h-4 w-4 text-amber-300/75" />
-									<div>
-										<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
-											Homebase
-										</div>
-										<div className="mt-1 text-sm font-semibold text-amber-100">
-											Owned Vigilantes
-										</div>
-									</div>
-								</div>
-
-								<button
-									type="button"
-									onClick={() => setShowHomebasePanel(false)}
-									className="rounded-lg border border-amber-900/35 bg-black/30 p-2 text-amber-200/70 hover:bg-amber-950/20 hover:text-amber-100 transition"
-								>
-									<X className="h-4 w-4" />
-								</button>
-							</div>
-
-							<div className="flex-1 overflow-y-auto vigilante-hide-scrollbar px-4 py-4 space-y-3">
-								{ownedVigilantes.length === 0 ? (
-									<div className="rounded-xl border border-amber-900/30 bg-black/25 p-4 text-sm text-amber-200/55">
-										No vigilantes recruited yet. Keep an eye on the map for available hires.
-									</div>
-								) : (
-									ownedVigilantes.map((v) => (
-										<button
-											key={v.id}
-											type="button"
-											onClick={() => handleOwnedVigilanteSelect(v.id)}
-											className="w-full text-left rounded-xl border border-amber-900/30 bg-black/25 px-4 py-3 hover:bg-amber-950/15 transition"
-										>
-											<div className="flex items-center gap-3">
-												<div className="flex h-10 w-10 items-center justify-center rounded-full border border-amber-700/35 bg-amber-950/20 text-sm font-bold text-amber-100">
-													{v.name[0]?.toUpperCase() ?? "V"}
-												</div>
-												<div className="min-w-0">
-													<div className="truncate text-sm font-semibold text-amber-100">
-														{v.alias}
-													</div>
-													<div className="truncate text-xs text-amber-200/55">
-														{v.name} • {v.role}
-													</div>
-												</div>
-											</div>
-										</button>
-									))
-								)}
-							</div>
-						</div>
-					</motion.aside>
-				)}
-			</AnimatePresence>
-
 			<VettingMinigameModal
-				open={showVettingModal && overlayMode === "recruit" && !!selectedRecruitVigilante}
+				open={
+					showVettingModal &&
+					overlayMode === "recruit" &&
+					!!selectedRecruitVigilante
+				}
 				character={selectedRecruitVigilante}
 				onClose={() => setShowVettingModal(false)}
 				onReject={() => {
@@ -1804,8 +2478,8 @@ export default function StreetMapScene({
 									setState((s) => ({ ...s, level: lvl.id }))
 								}
 								className={`px-3 py-1 rounded-md border cursor-pointer ${state.level === lvl.id
-										? "border-amber-500/70 bg-amber-900/40 text-amber-100"
-										: "border-amber-900/50 bg-black/30 text-amber-200/60 hover:border-amber-700/60 hover:text-amber-100"
+									? "border-amber-500/70 bg-amber-900/40 text-amber-100"
+									: "border-amber-900/50 bg-black/30 text-amber-200/60 hover:border-amber-700/60 hover:text-amber-100"
 									}`}
 							>
 								{lvl.label}
@@ -1815,7 +2489,7 @@ export default function StreetMapScene({
 				</div>
 			</div>
 
-			{/* ── Left incident panel + toggle ── */}
+			{/* ── Left incident panel ── */}
 			<div className="pointer-events-none absolute inset-y-16 left-0 z-[950] flex items-start">
 				<div className="pointer-events-auto mt-4">
 					<button
@@ -1851,7 +2525,7 @@ export default function StreetMapScene({
 								duration: 0.22,
 								ease: "easeOut",
 							}}
-							className="pointer-events-auto ml-2 mt-0 mb-4 w-80 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
+							className="pointer-events-auto ml-2 mt-0 mb-4 flex max-h-[min(85vh,820px)] w-80 max-w-[80vw] flex-col rounded-xl border border-amber-900/40 bg-black/55 shadow-xl shadow-black/60 backdrop-blur-md"
 						>
 							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
 								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
@@ -1859,101 +2533,193 @@ export default function StreetMapScene({
 								</div>
 							</div>
 
-							<div className="relative flex-1 max-h-72 overflow-y-auto px-3 py-2 space-y-2 vigilante-hide-scrollbar">
-								{state.incidents
-									.filter((i) => i.status === "active")
-									.sort((a, b) => {
-										if (a.id === state.selectedIncidentId) return -1;
-										if (b.id === state.selectedIncidentId) return 1;
-										return a.expiresAt - b.expiresAt;
-									})
-									.map((inc) => {
-										const isSelected = state.selectedIncidentId === inc.id;
-										return (
-											<button
-												key={inc.id}
-												type="button"
-												onClick={() => handleIncidentSelect(inc.id)}
-												className={`w-full text-left rounded-lg border px-3 py-2 text-xs transition-colors cursor-pointer ${
-													isSelected
-														? "border-amber-500/80 bg-amber-900/50 text-amber-100"
-														: "border-amber-900/50 bg-black/40 text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100"
+							<div className="relative min-h-0 flex-1 overflow-y-auto px-3 py-2 space-y-2 vigilante-hide-scrollbar">
+								{incidentPanelRows.map((inc) => {
+									const isSelected =
+										state.selectedIncidentId === inc.id;
+									const statusBadge =
+										inc.status === "resolving"
+											? "Resolving"
+											: inc.status === "resolved"
+												? "Resolved"
+												: null;
+									return (
+										<button
+											key={inc.id}
+											type="button"
+											onClick={() =>
+												handleIncidentSelect(inc.id)
+											}
+											className={`w-full text-left rounded-lg border px-3 py-2 text-xs transition-colors cursor-pointer ${isSelected
+												? "border-amber-500/80 bg-amber-900/50 text-amber-100"
+												: "border-amber-900/50 bg-black/40 text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100"
 												}`}
-											>
-												<div className="flex items-start gap-3">
-													<div className="mt-0.5 h-5 w-5 rounded-full border border-red-900 bg-red-900/30 flex items-center justify-center text-[11px] text-red-300">
-														!
-													</div>
-													<div className="flex-1">
-														<div className="font-semibold text-[11px] uppercase tracking-[0.16em]">
-															{incidentCategoryLabel(inc.category)}
-														</div>
-														<div className="mt-1 text-[11px] text-amber-200/70 line-clamp-2">
-															{inc.summary}
-														</div>
-														<TimerBar
-															createdAt={inc.createdAt}
-															expiresAt={inc.expiresAt}
-															onExpire={() => expireIncident(inc.id)}
-														/>
-														{isSelected && (
-															<div className="mt-3 space-y-2">
-																<div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/70">
-																	Assigned Resources
-																</div>
-
-																<div className="flex flex-wrap gap-2">
-																	{inc.assignedResources.length === 0 ? (
-																		<span className="text-[10px] text-amber-200/45">
-																			No resources assigned yet.
-																		</span>
-																	) : (
-																		inc.assignedResources.map((assignment, idx) => (
-																			<span
-																				key={`${assignment.playerId}-${assignment.resource}-${assignment.assignedAt}-${idx}`}
-																				className="rounded-full border border-amber-900/35 bg-black/30 px-2 py-1 text-[10px] text-amber-100/80"
-																			>
-																				{assignment.resource}
-																			</span>
-																		))
-																	)}
-																</div>
-
-																<div className="grid grid-cols-1 gap-2">
-																	{RESOURCE_OPTIONS.map((resource) => (
-																		<button
-																			key={resource}
-																			type="button"
-																			onClick={(e) => {
-																				e.stopPropagation();
-																				void handleSendResource(inc.id, resource);
-																			}}
-																			className="rounded-md border border-amber-700/50 bg-amber-950/25 px-2 py-1.5 text-[10px] uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-900/35 transition-colors"
-																		>
-																			Send {resource}
-																		</button>
-																	))}
-																</div>
-															</div>
-														)}
-													</div>
+										>
+											<div className="flex items-start gap-3">
+												<div
+													className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] ${inc.status === "resolved"
+														? "border-amber-800/50 bg-amber-950/35 text-amber-200/70"
+														: inc.status ===
+															"resolving"
+															? "border-amber-700/60 bg-amber-950/40 text-amber-200"
+															: "border-red-900 bg-red-900/30 text-red-300"
+														}`}
+												>
+													{inc.status === "active"
+														? "!"
+														: inc.status ===
+															"resolving"
+															? "…"
+															: "·"}
 												</div>
-											</button>
-										);
-									})}
+												<div className="min-w-0 flex-1">
+													<div className="flex items-center justify-between gap-2">
+														<div className="font-semibold text-[12px] leading-snug tracking-tight text-amber-50/95">
+															{formatIncidentTypeLabel(
+																inc.typeLabel,
+															)}
+														</div>
 
-								{state.incidents.filter((i) => i.status === "active").length === 0 && (
+														<TimerBar
+                              createdAt={inc.createdAt}
+                              expiresAt={inc.expiresAt}
+                              onExpire={() => expireIncident(inc.id)}
+                            />
+
+                            {isSelected && (
+                              <div className="mt-3 space-y-2">
+                                <div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/70">
+                                  Assigned Resources
+                                </div>
+
+                                <div className="flex flex-wrap gap-2">
+                                  {inc.assignedResources.length === 0 ? (
+                                    <span className="text-[10px] text-amber-200/45">
+                                      No resources assigned yet.
+                                    </span>
+                                  ) : (
+                                    inc.assignedResources.map((assignment, idx) => (
+                                      <span
+                                        key={`${assignment.playerId}-${assignment.resource}-${assignment.assignedAt}-${idx}`}
+                                        className="rounded-full border border-amber-900/35 bg-black/30 px-2 py-1 text-[10px] text-amber-100/90"
+                                      >
+                                        {assignment.resource}
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
+
+                                <div className="grid grid-cols-1 gap-2">
+                                  {RESOURCE_OPTIONS.map((resource) => (
+                                    <button
+                                      key={resource}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleSendResource(inc.id, resource);
+                                      }}
+                                      className="rounded-md border border-amber-700/50 bg-amber-950/25 px-2 py-1.5 text-[10px] uppercase tracking-[0.14em] text-amber-100 hover:bg-amber-900/35 transition-colors"
+                                    >
+                                      Send {resource}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {statusBadge != null && (
+                              <span className="shrink-0 text-[9px] uppercase tracking-[0.12em] text-amber-400/70">
+                                {statusBadge}
+                              </span>
+                            )}
+
+                            <div className="mt-1 text-[11px] text-amber-200/70 leading-snug">
+                              {inc.summary}
+                            </div>
+													{inc.status === "active" && (
+														<IncidentTimerBar
+															createdAt={
+																inc.createdAt
+															}
+															expiresAt={
+																inc.expiresAt
+															}
+															onExpire={() =>
+																expireIncident(
+																	inc.id,
+																)
+															}
+														/>
+													)}
+												</div>
+											</div>
+										</button>
+									);
+								})}
+
+								{state.incidents.length === 0 && (
 									<div className="text-[11px] text-amber-200/40 px-1 py-2">
-										No active incidents. The city is quiet... for now.
+										No incidents. The city is quiet… for now.
 									</div>
 								)}
 
 								<div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-black/70 to-transparent" />
 							</div>
 
-							{state.incidents.filter((i) => i.status === "active").length > 3 && (
-								<div className="px-3 pt-2 pb-3 text-[10px] text-amber-200/50">
-									More incidents below - scroll to view.
+							<div className="shrink-0 border-t border-amber-900/40 px-3 py-2">
+								<div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-amber-400/75">
+									Career
+								</div>
+								<div className="mt-1 text-[10px] tabular-nums text-amber-200/70 leading-snug">
+									<span className="text-emerald-400/90">
+										{state.careerStats.incidentsResolvedSuccess}
+										W
+									</span>
+									{" · "}
+									<span className="text-rose-400/90">
+										{state.careerStats.incidentsResolvedFailure}
+										L
+									</span>
+									{" · "}
+									{state.careerStats.incidentsExpired} expired
+									{" · "}
+									{state.careerStats.dispatchesCompleted} dispatches
+									{" · "}
+									{state.careerStats.vigilantesRecruited} recruited
+								</div>
+							</div>
+
+							{selectedIncident?.status === "active" && (
+								<div className="shrink-0 border-t border-amber-900/40 px-3 py-2.5">
+									<button
+										type="button"
+										onClick={() => setDeployModalOpen(true)}
+										className="w-full cursor-pointer rounded-lg border border-amber-700/45 bg-amber-950/25 py-2.5 text-[12px] font-medium text-amber-100/95 transition hover:border-amber-500/40 hover:bg-amber-950/40"
+									>
+										Deploy
+									</button>
+								</div>
+							)}
+
+							{selectedIncident?.status === "resolving" && (
+								<div className="shrink-0 border-t border-amber-900/40 px-3 py-3 text-center text-[11px] text-amber-200/75">
+									Resolving…
+								</div>
+							)}
+
+							{selectedIncident?.status === "resolved" && (
+								<div className="shrink-0 border-t border-amber-900/40 bg-black/30 px-3 py-2.5">
+									<button
+										type="button"
+										onClick={() =>
+											dismissResolvedIncident(
+												selectedIncident.id,
+											)
+										}
+										className="w-full rounded-lg border border-amber-900/50 py-2 text-[11px] text-amber-200/70 hover:border-amber-700/60 hover:text-amber-100"
+									>
+										Dismiss
+									</button>
 								</div>
 							)}
 						</motion.div>
@@ -2048,11 +2814,150 @@ export default function StreetMapScene({
 					)}
 				</AnimatePresence>
 			</div>
+
+			<div
+				className="fixed left-0 flex items-start"
+				style={{ top: 270, zIndex: 2000 }}
+			>
+				<div className="pointer-events-auto">
+					<button
+						type="button"
+						onClick={() =>
+							setState((s) => ({
+								...s,
+								showPolicePanel: !s.showPolicePanel,
+							}))
+						}
+						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1 shadow-[0_0_18px_rgba(120,53,15,0.18)]"
+					>
+						<span>Police</span>
+						<span className="text-[11px] flex items-center">
+							{state.showPolicePanel ? (
+								<ChevronLeft className="w-3 h-3" aria-hidden />
+							) : (
+								<ChevronRight className="w-3 h-3" aria-hidden />
+							)}
+						</span>
+					</button>
+				</div>
+
+				<AnimatePresence initial={false}>
+					{state.showPolicePanel && (
+						<motion.div
+							key="police-panel"
+							initial={{ x: -320, opacity: 0 }}
+							animate={{ x: 0, opacity: 1 }}
+							exit={{ x: -320, opacity: 0 }}
+							transition={{
+								type: "tween",
+								duration: 0.22,
+								ease: "easeOut",
+							}}
+							className="pointer-events-auto ml-2 w-80 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
+						>
+							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
+								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
+									Police
+								</div>
+							</div>
+
+							<div className="relative flex-1 max-h-72 overflow-y-auto px-3 py-2 space-y-2 vigilante-hide-scrollbar">
+								{[...policeEtaItems]
+									.sort((a, b) => a.etaMs - b.etaMs)
+									.map((item) => (
+										<div
+											key={`${item.unitId}_${item.incidentId}`}
+											className="w-full text-left rounded-lg border px-3 py-2 text-xs border-amber-900/50 bg-black/40 text-amber-200/80 shadow-[inset_0_1px_0_rgba(251,191,36,0.03)]"
+										>
+											<div className="flex items-start gap-3">
+												<div className="mt-0.5 h-5 w-5 rounded-full border border-red-900 bg-red-900/30 flex items-center justify-center text-[11px] text-red-300">
+													P
+												</div>
+												<div className="flex-1">
+													<div className="font-semibold text-[11px] uppercase tracking-[0.16em] text-amber-100/95">
+														{item.name}
+													</div>
+													<div className="mt-1 text-[11px] text-amber-200/70 line-clamp-2">
+														Responding to {item.incidentId.slice(0, 12)}...
+													</div>
+													<div className="mt-1 text-[11px] text-amber-100/90">
+														ETA: {formatEta(item.etaMs)}
+													</div>
+													<PoliceEtaBar etaMs={item.etaMs} />
+												</div>
+											</div>
+										</div>
+									))}
+
+								{policeEtaItems.length === 0 && (
+									<div className="text-[11px] text-amber-200/50 px-1 py-2">
+										No police currently en route.
+									</div>
+								)}
+
+								<div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-black/70 to-transparent" />
+							</div>
+
+							{policeEtaItems.length > 3 && (
+								<div className="px-3 pt-2 pb-3 text-[10px] text-amber-200/50">
+									More police responses below – scroll to view.
+								</div>
+							)}
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</div>
+
+			{chanceRollOverlay && (
+				<IncidentChanceRollOverlay
+					rolled={chanceRollOverlay.rolled}
+					adjustedPercent={chanceRollOverlay.adjustedPercent}
+					beforeLuckPercent={chanceRollOverlay.beforeLuckPercent}
+					breakdown={chanceRollOverlay.breakdown}
+					contextLabel={chanceRollOverlay.contextLabel}
+					success={chanceRollOverlay.success}
+					phase={chanceRollOverlay.phase}
+					hadDeployedGear={chanceRollOverlay.hadDeployedGear}
+					onContinue={() => setChanceRollOverlay(null)}
+				/>
+			)}
+
+			<IncidentDeployModal
+				open={
+					deployModalOpen &&
+					!!selectedIncident &&
+					selectedIncident.status === "active"
+				}
+				incident={
+					selectedIncident &&
+						selectedIncident.status === "active"
+						? {
+							id: selectedIncident.id,
+							category: selectedIncident.category,
+							typeLabel: selectedIncident.typeLabel,
+							summary: selectedIncident.summary,
+							createdAt: selectedIncident.createdAt,
+							expiresAt: selectedIncident.expiresAt,
+						}
+						: null
+				}
+				ownedVigilanteIds={state.ownedVigilanteIds}
+				vigilanteSheets={vigilantes}
+				resourcePool={state.resourcePool}
+				onClose={() => setDeployModalOpen(false)}
+				onIncidentExpire={() => {
+					if (selectedIncident?.status === "active") {
+						expireIncident(selectedIncident.id);
+					}
+					setDeployModalOpen(false);
+				}}
+				onConfirm={handleDeployConfirm}
+			/>
+
 			<InventorySorterModal
 				open={inventorySorterOpen}
 				onClose={() => setInventorySorterOpen(false)}
-				onWin={(reward) => {
-					console.log("Inventory Sorter reward:", reward);
+				onWin={() => {
 					setInventorySorterOpen(false);
 				}}
 			/>
@@ -2075,6 +2980,10 @@ export default function StreetMapScene({
 							className="pointer-events-none w-full transform-gpu will-change-transform"
 						>
 							<Inventory
+								resourcePool={state.resourcePool}
+								ownedVigilanteIds={state.ownedVigilanteIds}
+								vigilanteInjuryUntil={state.vigilanteInjuryUntil}
+								purchasedBuffIds={state.purchasedBuffIds}
 								onHide={() =>
 									setState((s) => ({
 										...s,
