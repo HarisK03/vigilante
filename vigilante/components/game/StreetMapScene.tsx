@@ -866,6 +866,17 @@ function formatEta(ms: number) {
 	return `${seconds}s`;
 }
 
+function formatCountdown(ms: number) {
+	const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+
+	if (minutes > 0) {
+		return `${minutes}:${String(seconds).padStart(2, "0")}`;
+	}
+	return `${seconds}s`;
+}
+
 const POLICE_BAR_MAX_MS = 60_000;
 
 function PoliceEtaBar({ etaMs }: { etaMs: number }) {
@@ -1980,6 +1991,18 @@ export default function StreetMapScene({
 		setShowVettingModal(false);
 	};
 
+	const expireRecruitLead = useCallback((leadId: string) => {
+		setState((s) => ({
+			...s,
+			recruitLeads: s.recruitLeads.filter((r) => r.id !== leadId),
+		}));
+
+		setSelectedRecruitLeadId((current) =>
+			current === leadId ? null : current,
+		);
+		setShowVettingModal(false);
+	}, []);
+
 	const handleDeployConfirm = (payload: {
 		vigilanteIds: string[];
 		resourceIds: string[];
@@ -2491,6 +2514,20 @@ export default function StreetMapScene({
 		[state.recruitLeads, selectedRecruitLeadId],
 	);
 
+	const [nowTick, setNowTick] = useState(() => Date.now());
+
+	useEffect(() => {
+		const id = window.setInterval(() => {
+			setNowTick(Date.now());
+		}, 250);
+
+		return () => window.clearInterval(id);
+	}, []);
+
+	const selectedRecruitMsLeft = selectedRecruitLead
+		? Math.max(0, selectedRecruitLead.expiresAt - nowTick)
+		: 0;
+
 	const selectedRecruitVigilante = useMemo(
 		() =>
 			selectedRecruitLead
@@ -2736,6 +2773,19 @@ export default function StreetMapScene({
 											{activeDossier.name} •{" "}
 											{activeDossier.role}
 										</div>
+										{overlayMode === "recruit" && selectedRecruitLead ? (
+											<div className="mt-3 rounded-xl border border-red-900/35 bg-red-950/15 px-3 py-2">
+												<div className="flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-red-200/80">
+													<span>Applicant availability</span>
+													<span>{formatCountdown(selectedRecruitMsLeft)}</span>
+												</div>
+												<IncidentTimerBar
+													createdAt={selectedRecruitLead.createdAt}
+													expiresAt={selectedRecruitLead.expiresAt}
+													onExpire={() => expireRecruitLead(selectedRecruitLead.id)}
+												/>
+											</div>
+										) : null}
 									</div>
 									<button
 										type="button"
@@ -3004,6 +3054,14 @@ export default function StreetMapScene({
 					!!selectedRecruitVigilante
 				}
 				character={selectedRecruitVigilante}
+				createdAt={selectedRecruitLead?.createdAt ?? null}
+				expiresAt={selectedRecruitLead?.expiresAt ?? null}
+				timeLeftMs={selectedRecruitMsLeft}
+				onExpire={() => {
+					if (selectedRecruitLead) {
+						expireRecruitLead(selectedRecruitLead.id);
+					}
+				}}
 				onClose={() => setShowVettingModal(false)}
 				onReject={() => {
 					setShowVettingModal(false);
