@@ -129,25 +129,13 @@ const TAB_ORDER: Record<InventoryTab, number> = {
 	buffs: 2,
 };
 
-function recoveryLine(untilMs: number, now: number): string {
+/** Compact countdown for injured tooltip (no prose, no “ready”). */
+function recoveryCountdownShort(untilMs: number, now: number): string {
 	const s = Math.max(0, Math.ceil((untilMs - now) / 1000));
 	const m = Math.floor(s / 60);
 	const sec = s % 60;
-	if (m >= 1) return `Recovering ${m}m ${sec}s — cannot deploy.`;
-	return `Recovering ${sec}s — cannot deploy.`;
-}
-
-function vigilanteTooltipSubtitle(item: VigilanteItem, now: number): string {
-	if (
-		item.status === "injured" &&
-		item.injuredUntilMs != null &&
-		now < item.injuredUntilMs
-	) {
-		return recoveryLine(item.injuredUntilMs, now);
-	}
-	if (item.status === "available") return "Ready to work.";
-	if (item.status === "injured") return "Hurt. Not at full strength.";
-	return "Can't be sent out.";
+	if (m >= 1) return `${m}m ${sec}s`;
+	return `${sec}s`;
 }
 
 /** Neutral tile; status colour only on the small corner circle */
@@ -224,8 +212,7 @@ type InventoryProps = {
 type InventoryHoverTip =
 	| { kind: "v"; item: VigilanteItem; el: HTMLElement }
 	| { kind: "r"; item: ResourceItem; el: HTMLElement }
-	| { kind: "b"; item: BuffItem; el: HTMLElement }
-	| { kind: "e"; el: HTMLElement };
+	| { kind: "b"; item: BuffItem; el: HTMLElement };
 
 function VigilantePortrait({
 	portraitSrc,
@@ -720,13 +707,6 @@ export default function Inventory({
 
 	const hideInventoryTip = () => setHoverTip(null);
 
-	const showEmptyRosterTip = (e: React.MouseEvent<HTMLElement>) => {
-		const el = e.currentTarget;
-		const r = el.getBoundingClientRect();
-		setTipPos({ left: r.left + r.width / 2, top: r.top - 10 });
-		setHoverTip({ kind: "e", el });
-	};
-
 	const buffIcon = (id: BuffItem["id"]) => {
 		const cls = tileIconClass;
 		if (id === "b1") return <FaBolt className={cls} aria-hidden />;
@@ -867,8 +847,6 @@ export default function Inventory({
 														<div
 															className={`group relative flex items-center justify-center ${vigilanteTileClass} cursor-default border-dashed border-zinc-600/50 bg-zinc-950/40 opacity-55 grayscale hover:opacity-70`}
 															aria-label="Empty roster slot"
-															onMouseEnter={showEmptyRosterTip}
-															onMouseLeave={hideInventoryTip}
 														>
 															<FaUser
 																className={`${vigilantePortraitIconClass} text-zinc-500/80`}
@@ -1023,22 +1001,31 @@ export default function Inventory({
 							transform: "translate(-50%, -100%)",
 						}}
 					>
-						{hoverTip.kind === "v" && (
-							<div className="min-w-0 text-[11px] leading-tight">
-								<div className="font-semibold text-amber-100/95">
-									{hoverTip.item.name}
+						{hoverTip.kind === "v" && (() => {
+							const item = hoverTip.item;
+							const showRecovery =
+								item.status === "injured" &&
+								item.injuredUntilMs != null &&
+								nowTick < item.injuredUntilMs;
+							return (
+								<div className="flex min-w-0 max-w-[min(260px,calc(100vw-2rem))] flex-col gap-0.5">
+									<span className="min-w-0 truncate font-semibold text-amber-100/95 text-xs sm:text-[13px] leading-snug">
+										{item.name}
+										<span className="sr-only">
+											{`, ${vigilanteStatusUi(item.status).shortLabel}`}
+										</span>
+									</span>
+									{showRecovery ? (
+										<div className="text-[10px] tabular-nums text-amber-200/60">
+											{recoveryCountdownShort(
+												item.injuredUntilMs!,
+												nowTick,
+											)}
+										</div>
+									) : null}
 								</div>
-								<div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-amber-300/75">
-									{vigilanteStatusUi(hoverTip.item.status).shortLabel}
-								</div>
-								<p className="mt-1 min-w-0 truncate text-[11px] text-amber-200/70">
-									{vigilanteTooltipSubtitle(
-										hoverTip.item,
-										nowTick,
-									)}
-								</p>
-							</div>
-						)}
+							);
+						})()}
 						{hoverTip.kind === "r" && (
 							<div className="min-w-0 text-[11px] leading-tight">
 								<div className="font-semibold text-amber-100/95">
@@ -1056,17 +1043,6 @@ export default function Inventory({
 								</div>
 								<p className="mt-1 min-w-0 truncate text-[11px] text-amber-200/70">
 									{hoverTip.item.summary}
-								</p>
-							</div>
-						)}
-						{hoverTip.kind === "e" && (
-							<div className="min-w-0 text-[11px] leading-tight text-amber-200/80">
-								<div className="font-semibold text-amber-100/95">
-									Open slot
-								</div>
-								<p className="mt-1 text-[11px] text-amber-200/65">
-									Recruit vigilantes at the base to grow your
-									roster (up to {ROSTER_SLOTS} shown here).
 								</p>
 							</div>
 						)}
