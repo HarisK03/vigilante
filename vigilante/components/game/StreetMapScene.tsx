@@ -739,7 +739,7 @@ function makeIncidentIcon(
 		width:${size}px;height:${size}px;border-radius:999px;
 		border:${borderW}px solid ${border};background:${bg};
 		display:flex;align-items:center;justify-content:center;
-		color:${baseColor};font-weight:800;font-size:${fontSize}px;
+		color:${baseColor};font-weight:800;font-size:${fontSize};
 		text-shadow:0 0 4px rgba(0,0,0,0.9);
 		box-shadow:${glow};">!</div>`;
 
@@ -1472,9 +1472,15 @@ export default function StreetMapScene({
 		string | null
 	>(null);
 
-	const [inventorySorterOpen, setInventorySorterOpen] = useState(false);
 	const [inventorySorterMode, setInventorySorterMode] =
 		useState<InventorySorterMode>(null);
+
+	const isGameplayPausedByMinigame = inventorySorterMode !== null;
+	const pauseStartedAtRef = useRef<number | null>(null);
+
+	const resolveIncidentDueAtRef = useRef<number | null>(null);
+	const resolveIncidentResumeFnRef = useRef<(() => void) | null>(null);
+	const pausedResolveRemainingMsRef = useRef<number | null>(null);
 
 	const [showExitingModal, setShowExitingModal] = useState(false);
 	const [deployModalOpen, setDeployModalOpen] = useState(false);
@@ -1494,9 +1500,7 @@ export default function StreetMapScene({
 		contextLabel: string;
 	} | null>(null);
 
-	const resolveIncidentTimeoutRef = useRef<ReturnType<
-		typeof setTimeout
-	> | null>(null);
+	const resolveIncidentTimeoutRef = useRef<number | null>(null);
 	const cloudPushInFlightRef = useRef(false);
 
 	// Cloud sync: Supabase upsert while playing (plus pagehide / unmount).
@@ -1692,6 +1696,72 @@ export default function StreetMapScene({
 			}
 		};
 	}, []);
+
+	useEffect(() => {
+		if (isGameplayPausedByMinigame) {
+			if (pauseStartedAtRef.current === null) {
+				pauseStartedAtRef.current = Date.now();
+			}
+
+			if (
+				resolveIncidentTimeoutRef.current &&
+				resolveIncidentResumeFnRef.current &&
+				resolveIncidentDueAtRef.current !== null
+			) {
+				window.clearTimeout(resolveIncidentTimeoutRef.current);
+				resolveIncidentTimeoutRef.current = null;
+
+				pausedResolveRemainingMsRef.current = Math.max(
+					0,
+					resolveIncidentDueAtRef.current - Date.now(),
+				);
+				resolveIncidentDueAtRef.current = null;
+			}
+
+			return;
+		}
+
+		if (pauseStartedAtRef.current === null) return;
+
+		const pausedMs = Date.now() - pauseStartedAtRef.current;
+		pauseStartedAtRef.current = null;
+
+		if (pausedMs > 0) {
+			setState((s) => ({
+				...s,
+				incidents: s.incidents.map((incident) =>
+					incident.status === "resolved"
+						? incident
+						: {
+							...incident,
+							createdAt: incident.createdAt + pausedMs,
+							expiresAt: incident.expiresAt + pausedMs,
+						},
+				),
+				recruitLeads: s.recruitLeads.map((lead) => ({
+					...lead,
+					createdAt: lead.createdAt + pausedMs,
+					expiresAt: lead.expiresAt + pausedMs,
+				})),
+			}));
+		}
+
+		if (
+			pausedResolveRemainingMsRef.current !== null &&
+			resolveIncidentResumeFnRef.current
+		) {
+			const remaining = pausedResolveRemainingMsRef.current;
+			pausedResolveRemainingMsRef.current = null;
+			resolveIncidentDueAtRef.current = Date.now() + remaining;
+
+			resolveIncidentTimeoutRef.current = window.setTimeout(() => {
+				resolveIncidentDueAtRef.current = null;
+				const fn = resolveIncidentResumeFnRef.current;
+				resolveIncidentResumeFnRef.current = null;
+				if (fn) fn();
+			}, remaining);
+		}
+	}, [isGameplayPausedByMinigame]);
 
 	useEffect(() => {
 		return () => {
@@ -2078,7 +2148,12 @@ export default function StreetMapScene({
 			};
 		});
 		const RESOLVE_MS = 2600;
-		resolveIncidentTimeoutRef.current = setTimeout(() => {
+		const finishIncidentResolution = () => {
+			resolveIncidentTimeoutRef.current = null;
+			resolveIncidentDueAtRef.current = null;
+			resolveIncidentResumeFnRef.current = null;
+			pausedResolveRemainingMsRef.current = null;
+
 			if (mode === "multiplayer" && sessionId) {
 				void deleteSessionMarkerByMarkerId(sessionId, id);
 				return;
@@ -2101,8 +2176,7 @@ export default function StreetMapScene({
 					resourcePool: pool,
 					careerStats: {
 						...s.careerStats,
-						dispatchesCompleted:
-							s.careerStats.dispatchesCompleted + 1,
+						dispatchesCompleted: s.careerStats.dispatchesCompleted + 1,
 						incidentsResolvedSuccess:
 							s.careerStats.incidentsResolvedSuccess +
 							(rollOutcome.success ? 1 : 0),
@@ -2113,34 +2187,33 @@ export default function StreetMapScene({
 					incidents: s.incidents.map((x) =>
 						x.id === id
 							? {
-									...x,
-									status: "resolved" as const,
-									deployedResourceIds: [],
-									resolution: {
-										success: rollOutcome.success,
-										adjustedPercent:
-											rollOutcome.adjustedPercent,
-										beforeLuckPercent:
-											rollOutcome.beforeLuckPercent,
-										rolled: rollOutcome.rolled,
-										baseChancePercent:
-											rollOutcome.baseChancePercent,
-										resourceMultiplier:
-											rollOutcome.resourceMultiplier,
-										buffMultiplier:
-											rollOutcome.buffMultiplier,
-										vigilanteMultiplier:
-											rollOutcome.vigilanteMultiplier,
-										avgArchetypeFit:
-											rollOutcome.avgArchetypeFit,
-										staffingSupportMultiplier:
-											rollOutcome.staffingSupportMultiplier,
-										gearPresenceMultiplier:
-											rollOutcome.gearPresenceMultiplier,
-										luckDeltaPercent:
-											rollOutcome.luckDeltaPercent,
-									},
-								}
+								...x,
+								status: "resolved" as const,
+								deployedResourceIds: [],
+								resolution: {
+									success: rollOutcome.success,
+									adjustedPercent: rollOutcome.adjustedPercent,
+									beforeLuckPercent:
+									rollOutcome.beforeLuckPercent,
+									rolled: rollOutcome.rolled,
+									baseChancePercent:
+									rollOutcome.baseChancePercent,
+									resourceMultiplier:
+									rollOutcome.resourceMultiplier,
+									buffMultiplier:
+									rollOutcome.buffMultiplier,
+									vigilanteMultiplier:
+									rollOutcome.vigilanteMultiplier,
+									avgArchetypeFit:
+									rollOutcome.avgArchetypeFit,
+									staffingSupportMultiplier:
+									rollOutcome.staffingSupportMultiplier,
+									gearPresenceMultiplier:
+									rollOutcome.gearPresenceMultiplier,
+									luckDeltaPercent:
+									rollOutcome.luckDeltaPercent,
+								},
+							}
 							: x,
 					),
 				};
@@ -2150,7 +2223,14 @@ export default function StreetMapScene({
 					? { ...prev, phase: "outcome" }
 					: prev,
 			);
-		}, RESOLVE_MS);
+		};
+		resolveIncidentResumeFnRef.current = finishIncidentResolution;
+		resolveIncidentDueAtRef.current = Date.now() + RESOLVE_MS;
+
+		resolveIncidentTimeoutRef.current = window.setTimeout(
+			finishIncidentResolution,
+			RESOLVE_MS,
+		);
 	};
 
 	const dismissResolvedIncident = (incidentId: string) => {
@@ -2173,7 +2253,7 @@ export default function StreetMapScene({
 	};
 
 	useEffect(() => {
-		if (inventorySorterOpen) return;
+		if (isGameplayPausedByMinigame) return;
 
 		let alive = true;
 		const MAX_ACTIVE = 100;
@@ -2256,7 +2336,7 @@ export default function StreetMapScene({
 			alive = false;
 		};
 	}, [
-		inventorySorterOpen,
+		isGameplayPausedByMinigame,
 		mode,
 		isHost,
 		sessionId,
@@ -2342,7 +2422,7 @@ export default function StreetMapScene({
 	}, []);
 
 	useEffect(() => {
-		if (inventorySorterOpen) return;
+		if (isGameplayPausedByMinigame) return;
 
 		const id = window.setInterval(() => {
 			const now = Date.now();
@@ -2410,7 +2490,7 @@ export default function StreetMapScene({
 		}, 1_000);
 		return () => window.clearInterval(id);
 	}, [
-		inventorySorterOpen,
+		isGameplayPausedByMinigame,
 		selectedRecruitLeadId,
 		state.recruitLeads,
 		state.incidents,
@@ -2419,14 +2499,17 @@ export default function StreetMapScene({
 	]);
 
 	useEffect(() => {
+		if (isGameplayPausedByMinigame) return;
+
 		const id = window.setInterval(() => {
 			setHelperPos(() => {
 				const moved = nudgeNearby(helperBase.lat, helperBase.lng);
 				return { lat: moved.lat, lng: moved.lng };
 			});
 		}, 9000);
+
 		return () => window.clearInterval(id);
-	}, [helperBase.lat, helperBase.lng]);
+	}, [helperBase.lat, helperBase.lng, isGameplayPausedByMinigame]);
 
 	const incidentCitizenPins = useMemo(() => {
 		const activeIncidents = state.incidents.filter(isOngoingIncident);
@@ -2517,12 +2600,14 @@ export default function StreetMapScene({
 	const [nowTick, setNowTick] = useState(() => Date.now());
 
 	useEffect(() => {
+		if (isGameplayPausedByMinigame) return;
+
 		const id = window.setInterval(() => {
 			setNowTick(Date.now());
 		}, 250);
 
 		return () => window.clearInterval(id);
-	}, []);
+	}, [isGameplayPausedByMinigame]);
 
 	const selectedRecruitMsLeft = selectedRecruitLead
 		? Math.max(0, selectedRecruitLead.expiresAt - nowTick)
@@ -3317,12 +3402,12 @@ export default function StreetMapScene({
 										key={game.id}
 										type="button"
 										onClick={() => {
-											if (
-												game.id === "inventory-sorter"
-											) {
-												setInventorySorterMode(
-													"supply-recovery",
-												);
+											if (chanceRollOverlay) return;
+											if (deployModalOpen) return;
+											if (showVettingModal) return;
+
+											if (game.id === "inventory-sorter") {
+												setInventorySorterMode("supply-recovery");
 											}
 										}}
 										className="w-full text-left rounded-lg border border-amber-900/50 bg-black/40 px-3 py-3 text-xs text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100 transition-colors cursor-pointer"
