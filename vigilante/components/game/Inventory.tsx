@@ -560,7 +560,9 @@ export default function Inventory({
 	const [slideDir, setSlideDir] = useState<1 | -1>(1);
 	const [hoverTip, setHoverTip] = useState<InventoryHoverTip | null>(null);
 	const [tipPos, setTipPos] = useState({ left: 0, top: 0 });
-	/** Bumps when re-entering the Vigilantes tab so portrait <img> nodes remount (avoids blank tiles after animation). */
+	/** Only bumps when navigating *to* the Vigilantes tab from another tab — unique AnimatePresence key (not roster edits). */
+	const [vigilantePanelMountId, setVigilantePanelMountId] = useState(0);
+	/** Bumps when re-entering Vigilantes or roster changes so portrait <img> nodes remount (avoids blank tiles). */
 	const [vigilantePortraitEpoch, setVigilantePortraitEpoch] = useState(0);
 	const [dossierSheet, setDossierSheet] = useState<VigilanteSheet | null>(
 		null,
@@ -597,6 +599,7 @@ export default function Inventory({
 		// Must bump in the same commit as `tab` — useEffect ran one frame late, so keys
 		// stayed e.g. `*-0` on first paint and matched the initial mount (blank img layer).
 		if (next === "vigilantes" && tab !== "vigilantes") {
+			setVigilantePanelMountId((n) => n + 1);
 			setVigilantePortraitEpoch((n) => n + 1);
 		}
 		setTab(next);
@@ -821,7 +824,14 @@ export default function Inventory({
 							custom={slideDir}
 						>
 							<motion.div
-								key={tab}
+								// Same key "vigilantes" on every re-entry lets Framer reuse the panel;
+								// opacity/transform can stick wrong so portraits vanish. Mount id only
+								// bumps on tab navigation, not on roster updates (see portrait epoch).
+								key={
+									tab === "vigilantes"
+										? `vigilantes-${vigilantePanelMountId}`
+										: tab
+								}
 								role="tabpanel"
 								aria-labelledby={`inventory-tab-${tab}`}
 								custom={slideDir}
