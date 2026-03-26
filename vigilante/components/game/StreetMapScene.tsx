@@ -226,6 +226,8 @@ type GameState = {
 	ownedVigilanteIds: string[];
 	recruitLeads: RecruitLead[];
 	resourcePool: Record<string, ResourcePoolEntry>;
+	credits: number;
+	purchasedUpgradeIds: string[];
 	vigilanteInjuryUntil: Record<string, number>;
 	careerStats: CareerStats;
 	purchasedBuffIds: string[];
@@ -1383,6 +1385,8 @@ function initialState(): GameState {
 		ownedVigilanteIds: ["bruce", "parya"],
 		recruitLeads: [],
 		resourcePool: { ...DEFAULT_RESOURCE_POOL },
+		credits: 500,
+		purchasedUpgradeIds: [],
 		vigilanteInjuryUntil: {},
 		careerStats: { ...DEFAULT_CAREER_STATS },
 		purchasedBuffIds: mergePurchasedBuffIds(undefined),
@@ -1447,11 +1451,18 @@ function loadState(saveKey: string): GameState {
 				? (p.recruitLeads as RecruitLead[])
 				: [],
 			resourcePool: mergeResourcePool(p.resourcePool),
+			credits:
+				typeof p.credits === "number" && Number.isFinite(p.credits)
+					? Math.max(0, Math.floor(p.credits))
+					: 500,
 			vigilanteInjuryUntil: pruneExpiredInjuries(
 				p.vigilanteInjuryUntil as Record<string, number> | undefined,
 				Date.now(),
 			),
 			careerStats: mergeCareerStats(p.careerStats),
+			purchasedUpgradeIds: Array.isArray(p.purchasedUpgradeIds)
+				? (p.purchasedUpgradeIds as string[])
+				: [],
 			purchasedBuffIds: mergePurchasedBuffIds(p.purchasedBuffIds),
 		};
 	} catch {
@@ -1764,6 +1775,25 @@ export default function StreetMapScene({
 		// Game JSON lives at `saveKey`; slot meta (incl. menu "last updated") lives at `keyForSlot(saveSlot)`.
 		if (saveSlot) touchSave(saveSlot);
 	}, [mode, saveKey, saveSlot, state]);
+
+	// Re-sync the three market fields (credits, resourcePool, purchasedUpgradeIds)
+	// when an external page (black market test, game-over screen) writes to the
+	// same localStorage key. The `storage` event fires in the same tab on
+	// same-origin writes, so this works when navigating between Next.js routes.
+	useEffect(() => {
+		const onStorage = (e: StorageEvent) => {
+			if (e.key !== saveKey) return;
+			const saved = loadState(saveKey);
+			setState((s) => ({
+				...s,
+				credits: saved.credits,
+				resourcePool: saved.resourcePool,
+				purchasedUpgradeIds: saved.purchasedUpgradeIds,
+			}));
+		};
+		window.addEventListener("storage", onStorage);
+		return () => window.removeEventListener("storage", onStorage);
+	}, [saveKey]);
 
 	const pushCloudToServer = useCallback(async () => {
 		if (!cloudSync) return;
@@ -2161,7 +2191,8 @@ export default function StreetMapScene({
 		} else {
 			setState((s) => ({
 				...s,
-				incidents: [theftIncident, ...s.incidents],
+				credits: Math.max(0, s.credits + Math.max(0, reward.credits)),
+			incidents: [theftIncident, ...s.incidents],
 				selectedIncidentId: theftIncident.id,
 				showIncidentPanel: true,
 			}));
@@ -2306,9 +2337,11 @@ export default function StreetMapScene({
 						pool = forfeitDeployment(pool, deployed);
 					}
 				}
+				const missionCredits = rollOutcome.success ? 80 : 20;
 				return {
 					...s,
 					resourcePool: pool,
+					credits: Math.max(0, s.credits + missionCredits),
 					careerStats: {
 						...s.careerStats,
 						dispatchesCompleted: s.careerStats.dispatchesCompleted + 1,
@@ -3629,8 +3662,155 @@ export default function StreetMapScene({
 							)}
 						</motion.div>
 					)}
+								</AnimatePresence>
+			</div>
+
+			{chanceRollOverlay && (
+				<IncidentChanceRollOverlay
+					rolled={chanceRollOverlay.rolled}
+					adjustedPercent={chanceRollOverlay.adjustedPercent}
+					beforeLuckPercent={chanceRollOverlay.beforeLuckPercent}
+					breakdown={chanceRollOverlay.breakdown}
+					contextLabel={chanceRollOverlay.contextLabel}
+					success={chanceRollOverlay.success}
+					phase={chanceRollOverlay.phase}
+					hadDeployedGear={chanceRollOverlay.hadDeployedGear}
+					onContinue={() => setChanceRollOverlay(null)}
+				/>
+			)}
+
+			<IncidentDeployModal
+				open={
+					deployModalOpen &&
+					!!selectedIncident &&
+					selectedIncident.status === "active"
+				}
+				incident={
+					selectedIncident && selectedIncident.status === "active"
+						? {
+								id: selectedIncident.id,
+								category: selectedIncident.category,
+								typeLabel: selectedIncident.typeLabel,
+								title: selectedIncident.title,
+								summary: selectedIncident.summary,
+								createdAt: selectedIncident.createdAt,
+								expiresAt: selectedIncident.expiresAt,
+							}
+						: null
+				}
+				ownedVigilanteIds={state.ownedVigilanteIds}
+				vigilanteSheets={vigilantes}
+				resourcePool={state.resourcePool}
+				onClose={() => setDeployModalOpen(false)}
+				onIncidentExpire={() => {
+					if (selectedIncident?.status === "active") {
+						expireIncident(selectedIncident.id);
+					}
+					setDeployModalOpen(false);
+				}}
+				onConfirm={handleDeployConfirm}
+			/>
+
+			<InventorySorterModal
+				open={inventorySorterMode !== null}
+				onClose={() => setInventorySorterMode(null)}
+				onWin={(reward) => {
+					if (
+						inventorySorterMode === "resource-theft" &&
+						selectedTheftSite
+					) {
+						handleTheftSuccess(selectedTheftSite, reward);
+						return;
+					}
+					setInventorySorterMode(null);
+				}}
+				title={
+					inventorySorterMode === "resource-theft"
+						? "Resource Theft"
+						: "Inventory Sorter"
+				}
+				subtitle={
+					inventorySorterMode === "resource-theft"
+						? "Move the stolen goods fast, keep the layout clean, and get out before the area locks down."
+						: "Organize the emergency locker to recover extra supplies before time runs out."
+				}
+			/>
+
+			<div className="pointer-events-none absolute inset-x-0 bottom-0 z-[980] max-h-[min(92vh,100%)] overflow-hidden">
+				<AnimatePresence initial={false} mode="wait">
+					{state.showInventoryPanel ? (
+						<motion.div
+							key="inventory-panel"
+							initial={{ y: "100%" }}
+							animate={{ y: 0 }}
+							exit={{ y: "100%" }}
+							transition={{
+								type: "tween",
+								duration: 0.48,
+								ease: [0.22, 0.9, 0.28, 1],
+							}}
+							style={{ transformOrigin: "bottom center" }}
+							className="pointer-events-none w-full transform-gpu will-change-transform"
+						>
+							<Inventory
+								resourcePool={state.resourcePool}
+								ownedVigilanteIds={state.ownedVigilanteIds}
+								vigilanteInjuryUntil={
+									state.vigilanteInjuryUntil
+								}
+								purchasedUpgradeIds={state.purchasedUpgradeIds}
+								tab={state.inventoryTab}
+								onTabChange={(nextTab) =>
+									setState((s) => ({
+										...s,
+										inventoryTab: nextTab,
+									}))
+								}
+								onHide={() =>
+									setState((s) => ({
+										...s,
+										showInventoryPanel: false,
+									}))
+								}
+							/>
+						</motion.div>
+					) : (
+						<motion.div
+							key="inventory-collapsed"
+							initial={{ y: "100%" }}
+							animate={{ y: 0 }}
+							exit={{ y: "100%" }}
+							transition={{
+								type: "tween",
+								duration: 0.38,
+								ease: [0.22, 0.9, 0.28, 1],
+							}}
+							style={{ transformOrigin: "bottom center" }}
+							className="pointer-events-auto w-full transform-gpu will-change-transform border-t border-amber-900/55 bg-black/80 px-4 py-2.5 backdrop-blur-md"
+						>
+							<button
+								type="button"
+								onClick={() =>
+									setState((s) => ({
+										...s,
+										showInventoryPanel: true,
+									}))
+								}
+								className="flex w-full cursor-pointer items-center justify-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-amber-200/75 transition-colors hover:text-amber-100"
+								aria-expanded={false}
+								aria-label="Show inventory"
+							>
+								<span>Show inventory</span>
+								<ChevronUp
+									className="h-4 w-4 shrink-0"
+									strokeWidth={2.25}
+									aria-hidden
+								/>
+							</button>
+						</motion.div>
+					)}
 				</AnimatePresence>
-			</div>	
+			</div>
 		</div>
 	);
 }
