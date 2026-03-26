@@ -1379,7 +1379,7 @@ function initialState(): GameState {
 		incidents: [],
 		showIncidentPanel: true,
 		showMinigamePanel: false,
-		showPolicePanel: true,
+		showPolicePanel: false,
 		showInventoryPanel: true,
 		inventoryTab: "vigilantes",
 		ownedVigilanteIds: ["bruce", "parya"],
@@ -1398,10 +1398,27 @@ function loadState(saveKey: string): GameState {
 		const raw = localStorage.getItem(saveKey);
 		if (!raw) return initialState();
 		const p = JSON.parse(raw) as Partial<GameState>;
-		const showIncidentPanel =
+		const rawShowIncidentPanel =
 			typeof p.showIncidentPanel === "boolean"
 				? p.showIncidentPanel
 				: true;
+		const rawShowMinigamePanel =
+			typeof p.showMinigamePanel === "boolean"
+				? p.showMinigamePanel
+				: false;
+		const rawShowPolicePanel =
+			typeof p.showPolicePanel === "boolean"
+				? p.showPolicePanel
+				: false;
+
+		const activeLeftTab = rawShowMinigamePanel
+			? "minigame"
+			: rawShowPolicePanel
+				? "police"
+				: rawShowIncidentPanel
+					? "incident"
+					: null;
+
 		const selectedFromSave =
 			typeof p.selectedIncidentId === "string"
 				? p.selectedIncidentId
@@ -1411,21 +1428,15 @@ function loadState(saveKey: string): GameState {
 				typeof p.level === "number" && p.level >= 1 && p.level <= 3
 					? p.level
 					: 1,
-			selectedIncidentId: showIncidentPanel ? selectedFromSave : null,
+			selectedIncidentId: activeLeftTab === "incident" ? selectedFromSave : null,
 			incidents: Array.isArray(p.incidents)
 				? p.incidents
 						.map(parseStoredIncident)
 						.filter((x): x is Incident => x !== null)
 				: [],
-			showIncidentPanel,
-			showMinigamePanel:
-				typeof p.showMinigamePanel === "boolean"
-					? p.showMinigamePanel
-					: false,
-			showPolicePanel:
-				typeof p.showPolicePanel === "boolean"
-					? p.showPolicePanel
-					: true,
+			showIncidentPanel: activeLeftTab === "incident",
+			showMinigamePanel: activeLeftTab === "minigame",
+			showPolicePanel: activeLeftTab === "police",
 		showInventoryPanel:
 			typeof p.showInventoryPanel === "boolean"
 				? p.showInventoryPanel
@@ -1557,6 +1568,47 @@ export default function StreetMapScene({
 			setDialogue(dialogueData);
 		}
 	};
+
+	const handlePoliceResolveIncident = useCallback((incidentId: string) => {
+		setState((s) => ({
+			...s,
+			selectedIncidentId:
+				s.selectedIncidentId === incidentId ? null : s.selectedIncidentId,
+			incidents: s.incidents.filter((incident) => incident.id !== incidentId),
+		}));
+	}, []);
+
+	const toggleExclusiveLeftPanel = useCallback(
+		(panel: "incident" | "minigame" | "police") => {
+			setState((s) => {
+				const isSamePanelOpen =
+					(panel === "incident" && s.showIncidentPanel) ||
+					(panel === "minigame" && s.showMinigamePanel) ||
+					(panel === "police" && s.showPolicePanel);
+
+				if (isSamePanelOpen) {
+					return {
+						...s,
+						showIncidentPanel: false,
+						showMinigamePanel: false,
+						showPolicePanel: false,
+						selectedIncidentId:
+							panel === "incident" ? null : s.selectedIncidentId,
+					};
+				}
+
+				return {
+					...s,
+					showIncidentPanel: panel === "incident",
+					showMinigamePanel: panel === "minigame",
+					showPolicePanel: panel === "police",
+					selectedIncidentId:
+						panel === "incident" ? s.selectedIncidentId : null,
+				};
+			});
+		},
+		[],
+	);
 
 	// Dialogue-Inventory Interaction: auto-close inventory when dialogue opens,
 	// and restore it when dialogue closes only if it was open before.
@@ -1993,12 +2045,16 @@ export default function StreetMapScene({
 					...s,
 					selectedIncidentId: null,
 					showIncidentPanel: false,
+					showMinigamePanel: false,
+					showPolicePanel: false,
 				};
 			}
 			return {
 				...s,
 				selectedIncidentId: id,
 				showIncidentPanel: true,
+				showMinigamePanel: false,
+				showPolicePanel: false,
 			};
 		});
 	};
@@ -2014,6 +2070,8 @@ export default function StreetMapScene({
 			...s,
 			selectedIncidentId: id,
 			showIncidentPanel: true,
+			showMinigamePanel: false,
+			showPolicePanel: false,
 		}));
 	};
 
@@ -2899,6 +2957,7 @@ export default function StreetMapScene({
 					}))}
 					onPoliceRenderUpdate={setPoliceRenderItems}
 					onPoliceEtaUpdate={setPoliceEtaItems}
+					onPoliceResolveIncident={handlePoliceResolveIncident}
 				/>
 				<CharacterMarkers
 					pins={visibleDynamicPins}
@@ -3259,45 +3318,13 @@ export default function StreetMapScene({
 				}}
 			/>
 
-			<div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] flex justify-center pt-4">
-				<div className="pointer-events-auto inline-flex items-center gap-3 rounded-xl border border-amber-900/40 bg-black/40 backdrop-blur-md px-4 py-3 text-amber-200/70">
-					<div className="text-[11px] uppercase tracking-[0.22em] text-amber-400/70">
-						Zoom Tier
-					</div>
-					<div className="flex gap-2 text-xs">
-						{LEVELS.map((lvl) => (
-							<button
-								key={lvl.id}
-								type="button"
-								onClick={() =>
-									setState((s) => ({ ...s, level: lvl.id }))
-								}
-								className={`px-3 py-1 rounded-md border cursor-pointer ${
-									state.level === lvl.id
-										? "border-amber-500/70 bg-amber-900/40 text-amber-100"
-										: "border-amber-900/50 bg-black/30 text-amber-200/60 hover:border-amber-700/60 hover:text-amber-100"
-								}`}
-							>
-								{lvl.label}
-							</button>
-						))}
-					</div>
-				</div>
-			</div>
-
 			<div className="pointer-events-none absolute inset-y-16 left-0 z-[950] flex items-start pt-4">
 				<div className="pointer-events-auto">
 					<button
 						type="button"
 						onClick={() => {
 							const wasOpen = state.showIncidentPanel;
-							setState((s) => ({
-								...s,
-								showIncidentPanel: !s.showIncidentPanel,
-								selectedIncidentId: wasOpen
-									? null
-									: s.selectedIncidentId,
-							}));
+							toggleExclusiveLeftPanel("incident");
 							if (wasOpen) setDeployModalOpen(false);
 						}}
 						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
@@ -3346,29 +3373,27 @@ export default function StreetMapScene({
 													inc.id,
 												)
 											}
-											className={`flex h-[92px] flex-col px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
-												isSelected
+											className={`flex h-[92px] flex-col px-3 py-2 text-left text-xs transition-colors cursor-pointer ${isSelected
 													? "border-amber-500/80 bg-amber-900/50 text-amber-100"
 													: "border-amber-900/50 bg-black/40 text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100"
-											} w-full rounded-lg border`}
+												} w-full rounded-lg border`}
 										>
 											<div className="flex min-h-0 flex-1 flex-col justify-center">
 												<div className="flex h-[64px] w-full shrink-0 items-center gap-3">
 													<div
-														className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] ${
-															inc.status ===
-															"resolved"
+														className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] ${inc.status ===
+																"resolved"
 																? "border-amber-800/50 bg-amber-950/35 text-amber-200/70"
 																: inc.status ===
-																	  "resolving"
+																	"resolving"
 																	? "border-amber-700/60 bg-amber-950/40 text-amber-200"
 																	: "border-red-900 bg-red-900/30 text-red-300"
-														}`}
+															}`}
 													>
 														{inc.status === "active"
 															? "!"
 															: inc.status ===
-																  "resolving"
+																"resolving"
 																? "…"
 																: "·"}
 													</div>
@@ -3458,12 +3483,7 @@ export default function StreetMapScene({
 				<div className="pointer-events-auto">
 					<button
 						type="button"
-						onClick={() =>
-							setState((s) => ({
-								...s,
-								showMinigamePanel: !s.showMinigamePanel,
-							}))
-						}
+						onClick={() => toggleExclusiveLeftPanel("minigame")}
 						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
 					>
 						<span>Minigames</span>
@@ -3555,12 +3575,7 @@ export default function StreetMapScene({
 				<div className="pointer-events-auto">
 					<button
 						type="button"
-						onClick={() =>
-							setState((s) => ({
-								...s,
-								showPolicePanel: !s.showPolicePanel,
-							}))
-						}
+						onClick={() => toggleExclusiveLeftPanel("police")}
 						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1 shadow-[0_0_18px_rgba(120,53,15,0.18)]"
 					>
 						<span>Police</span>
@@ -3647,7 +3662,7 @@ export default function StreetMapScene({
 							)}
 						</motion.div>
 					)}
-				</AnimatePresence>
+								</AnimatePresence>
 			</div>
 
 			{chanceRollOverlay && (
