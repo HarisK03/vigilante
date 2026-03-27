@@ -18,11 +18,14 @@ import {
 	X,
 } from "lucide-react";
 import InventorySorterModal from "../minigames/InventorySorterModal";
+import FireMinigame from "./FireMinigame";
+import HackMinigame from "./HackMinigame";
 import type { LatLngBounds, LatLngTuple } from "leaflet";
 import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
 import Inventory from "./Inventory";
 import PoliceSystem from "./police/policeSystem";
+import PoliceCaptureModal from "./police/PoliceCaptureModal";
 import type { PoliceEtaItem, PoliceRenderItem } from "./police/policeTypes";
 import IncidentChanceRollOverlay from "./IncidentChanceRollOverlay";
 import IncidentDeployModal from "./IncidentDeployModal";
@@ -238,6 +241,7 @@ type GameState = {
 	inventoryTab: "vigilantes" | "resources" | "buffs";
 	ownedVigilanteIds: string[];
 	recruitLeads: RecruitLead[];
+	consumedTheftSiteIds: string[];
 	resourcePool: Record<string, ResourcePoolEntry>;
 	credits: number;
 	purchasedUpgradeIds: string[];
@@ -247,6 +251,11 @@ type GameState = {
 	/** Achievement tracking */
 	unlockedAchievementIds: UnlockedAchievement[];
 	achievementProgress: AchievementProgress;
+	activeMinigame: {
+		type: "fire" | "hack" | null;
+		incidentId: string;
+		difficulty: number;
+	} | null;
 };
 
 const CENTER: LatLngTuple = [40.7128, -74.006];
@@ -729,21 +738,26 @@ function pickSpatiallyUniformPoi(
 	return randomFrom(pool);
 }
 
-function applyTheftRewardToPool(
+function applyInventorySorterRewardToPool(
 	pool: Record<string, ResourcePoolEntry>,
-	site: TheftSite,
-	bundleCount: number,
+	items: Array<{ type: string; quantity: number }>,
 ) {
 	const next: Record<string, ResourcePoolEntry> = { ...pool };
 
-	for (let i = 0; i < bundleCount; i += 1) {
-		for (const id of site.rewardIds) {
-			const entry = next[id] ?? { qty: 0, deployed: 0 };
-			next[id] = {
-				...entry,
-				qty: entry.qty + 1,
-			};
-		}
+	for (const item of items) {
+		if (typeof item.type !== "string" || item.type.length === 0) continue;
+
+		const quantity = Number.isFinite(item.quantity)
+			? Math.max(0, Math.floor(item.quantity))
+			: 0;
+
+		if (quantity <= 0) continue;
+
+		const entry = next[item.type] ?? { qty: 0, deployed: 0 };
+		next[item.type] = {
+			...entry,
+			qty: entry.qty + quantity,
+		};
 	}
 
 	return next;
@@ -1478,6 +1492,7 @@ function initialState(): GameState {
 		inventoryTab: "vigilantes",
 		ownedVigilanteIds: ["bruce", "parya"],
 		recruitLeads: [],
+		consumedTheftSiteIds: [],
 		resourcePool: { ...DEFAULT_RESOURCE_POOL },
 		credits: 500,
 		purchasedUpgradeIds: [],
@@ -1490,6 +1505,7 @@ function initialState(): GameState {
 			uniqueVigilantesOwned: new Set(["bruce", "parya"]),
 			sessionStartTime: Date.now(),
 		},
+		activeMinigame: null,
 	};
 }
 
@@ -1594,21 +1610,26 @@ function loadState(saveKey: string): GameState {
 			showIncidentPanel: activeLeftTab === "incident",
 			showMinigamePanel: activeLeftTab === "minigame",
 			showPolicePanel: activeLeftTab === "police",
-			showInventoryPanel:
-				typeof p.showInventoryPanel === "boolean"
-					? p.showInventoryPanel
-					: true,
-			inventoryTab:
+				showInventoryPanel:
+					typeof p.showInventoryPanel === "boolean"
+						? p.showInventoryPanel
+						: true,
+				inventoryTab:
 				p.inventoryTab === "vigilantes" ||
 				p.inventoryTab === "resources" ||
 				p.inventoryTab === "buffs"
-					? p.inventoryTab
-					: "vigilantes",
+						? p.inventoryTab
+						: "vigilantes",
 			ownedVigilanteIds: Array.isArray(p.ownedVigilanteIds)
 				? (p.ownedVigilanteIds as string[])
 				: ["bruce", "parya"],
 			recruitLeads: Array.isArray(p.recruitLeads)
 				? (p.recruitLeads as RecruitLead[])
+				: [],
+			consumedTheftSiteIds: Array.isArray(p.consumedTheftSiteIds)
+				? (p.consumedTheftSiteIds as string[]).filter(
+					(id): id is string => typeof id === "string",
+				)
 				: [],
 			resourcePool: mergeResourcePool(p.resourcePool),
 			credits:
@@ -1636,6 +1657,7 @@ function loadState(saveKey: string): GameState {
 					)
 				: [],
 			achievementProgress,
+			activeMinigame: null,
 		};
 	} catch {
 		return initialState();
@@ -1676,10 +1698,28 @@ export default function StreetMapScene({
 	const [inventorySorterMode, setInventorySorterMode] =
 		useState<InventorySorterMode>(null);
 
+	const [policeCaptureState, setPoliceCaptureState] = useState<{
+		open: boolean;
+		capturedIds: string[];
+	}>({
+		open: false,
+		capturedIds: [],
+	});
+
 	// Achievement tracking
 	const achievements = useAchievements(state, setState);
 
-	const isGameplayPausedByMinigame = inventorySorterMode !== null;
+	const [pendingHackMinigame, setPendingHackMinigame] = useState<{
+		incidentId: string;
+	} | null>(null);
+
+	const isGameplayPausedByMinigame = inventorySorterMode !== null || state.activeMinigame !== null;
+
+	// ── Pause tracking refs ───────────────────────────────────────────────────
+	// pauseStartedAtRef: wall-clock time when the current pause began.
+	//   atomically inside the expiry interval's setState. This is the key fix —
+	//   the old code applied the stretch in a separate setState which could race
+	//   against the expiry check and delete incidents that still had time left.
 	const pauseStartedAtRef = useRef<number | null>(null);
 
 	const resolveIncidentDueAtRef = useRef<number | null>(null);
@@ -1834,16 +1874,37 @@ export default function StreetMapScene({
 	};
 
 	const handlePoliceResolveIncident = useCallback((incidentId: string) => {
+		const current = stateRef.current;
+		const targetIncident =
+			current.incidents.find((incident) => incident.id === incidentId) ?? null;
+
+		const capturedIds = (targetIncident?.deployedVigilanteIds ?? []).filter(
+			(id) => current.ownedVigilanteIds.includes(id),
+		);
+
+		const capturedSet = new Set(capturedIds);
+
 		setState((s) => ({
 			...s,
 			selectedIncidentId:
 				s.selectedIncidentId === incidentId
 					? null
 					: s.selectedIncidentId,
+			ownedVigilanteIds:
+				capturedIds.length > 0
+					? s.ownedVigilanteIds.filter((id) => !capturedSet.has(id))
+					: s.ownedVigilanteIds,
 			incidents: s.incidents.filter(
 				(incident) => incident.id !== incidentId,
 			),
 		}));
+
+		if (capturedIds.length > 0) {
+			setPoliceCaptureState({
+				open: true,
+				capturedIds,
+			});
+		}
 	}, []);
 
 	const toggleExclusiveLeftPanel = useCallback(
@@ -2239,10 +2300,10 @@ export default function StreetMapScene({
 			return;
 		}
 
-		if (pauseStartedAtRef.current === null) return;
-
-		const pausedMs = Date.now() - pauseStartedAtRef.current;
-		pauseStartedAtRef.current = null;
+		// Unpausing: accumulate elapsed ms for the expiry interval to consume.
+		if (pauseStartedAtRef.current !== null) {
+			const pausedMs = Date.now() - pauseStartedAtRef.current;
+			pauseStartedAtRef.current = null;
 
 		if (pausedMs > 0) {
 			setState((s) => ({
@@ -2279,6 +2340,7 @@ export default function StreetMapScene({
 				if (fn) fn();
 			}, remaining);
 		}
+	}
 	}, [isGameplayPausedByMinigame]);
 
 	useEffect(() => {
@@ -2709,17 +2771,23 @@ export default function StreetMapScene({
 			items: Array<{ type: string; quantity: number }>;
 		},
 	) => {
-		const bundleCount = reward.items.reduce((sum, item) => {
-			if (item.type === "supply_pack") return sum + item.quantity;
-			return sum;
-		}, 0);
-
-		const bundles = Math.max(1, bundleCount);
 		const theftIncident = makeTheftIncident(site);
 
 		setState((s) => ({
 			...s,
-			resourcePool: applyTheftRewardToPool(s.resourcePool, site, bundles),
+			credits: Math.max(0, s.credits + Math.max(0, reward.credits)),
+			resourcePool: applyInventorySorterRewardToPool(
+				s.resourcePool,
+				reward.items,
+			),
+			consumedTheftSiteIds: s.consumedTheftSiteIds.includes(site.id)
+				? s.consumedTheftSiteIds
+				: [...s.consumedTheftSiteIds, site.id],
+			incidents: [theftIncident, ...s.incidents],
+			selectedIncidentId: theftIncident.id,
+			showIncidentPanel: true,
+			showMinigamePanel: false,
+			showPolicePanel: false,
 		}));
 
 		if (mode === "multiplayer" && sessionId) {
@@ -2735,15 +2803,8 @@ export default function StreetMapScene({
 				expiresAt: new Date(theftIncident.expiresAt).toISOString(),
 				status: "active",
 			});
-		} else {
-			setState((s) => ({
-				...s,
-				credits: Math.max(0, s.credits + Math.max(0, reward.credits)),
-				incidents: [theftIncident, ...s.incidents],
-				selectedIncidentId: theftIncident.id,
-				showIncidentPanel: true,
-			}));
 		}
+
 		setInventorySorterMode(null);
 		setSelectedTheftSiteId(null);
 	};
@@ -2796,6 +2857,151 @@ export default function StreetMapScene({
 		setShowVettingModal(false);
 	}, []);
 
+	// ── Minigame helpers ──────────────────────────────────────────────────────
+
+	const getMinigameForIncident = (
+		incident: Incident,
+	): { type: "fire"; difficulty: number } | null => {
+		if (incident.category === "fire_rescue" && Math.random() <= 1) {
+			return { type: "fire", difficulty: 0 };
+		}
+		return null;
+	};
+
+	const finishIncidentResolutionForId = (
+		incidentId: string,
+		rollOutcome: {
+			success: boolean;
+			adjustedPercent: number;
+			beforeLuckPercent: number;
+			rolled: number;
+			baseChancePercent: number;
+			resourceMultiplier: number;
+			buffMultiplier: number;
+			vigilanteMultiplier: number;
+			avgArchetypeFit: number;
+			staffingSupportMultiplier: number;
+			gearPresenceMultiplier: number;
+			luckDeltaPercent: number;
+		},
+	) => {
+		if (mode === "multiplayer" && sessionId) {
+			void deleteSessionMarkerByMarkerId(sessionId, incidentId);
+			return;
+		}
+
+		setState((s) => {
+			const cur = s.incidents.find((x) => x.id === incidentId);
+			if (!cur || cur.status !== "resolving") return s;
+			const deployed = cur.deployedResourceIds ?? [];
+			let pool = s.resourcePool;
+			if (deployed.length > 0) {
+				if (rollOutcome.success) {
+					pool = returnDeployment(pool, deployed);
+				} else {
+					pool = forfeitDeployment(pool, deployed);
+				}
+			}
+			const missionCredits = rollOutcome.success ? 80 : 20;
+			return {
+				...s,
+				resourcePool: pool,
+				credits: Math.max(0, s.credits + missionCredits),
+				careerStats: {
+					...s.careerStats,
+					dispatchesCompleted: s.careerStats.dispatchesCompleted + 1,
+					incidentsResolvedSuccess:
+						s.careerStats.incidentsResolvedSuccess +
+						(rollOutcome.success ? 1 : 0),
+					incidentsResolvedFailure:
+						s.careerStats.incidentsResolvedFailure +
+						(rollOutcome.success ? 0 : 1),
+				},
+				incidents: s.incidents.map((x) =>
+					x.id === incidentId
+						? {
+							...x,
+							status: "resolved" as const,
+							deployedResourceIds: [],
+							resolution: {
+								success: rollOutcome.success,
+								adjustedPercent: rollOutcome.adjustedPercent,
+								beforeLuckPercent: rollOutcome.beforeLuckPercent,
+								rolled: rollOutcome.rolled,
+								baseChancePercent: rollOutcome.baseChancePercent,
+								resourceMultiplier: rollOutcome.resourceMultiplier,
+								buffMultiplier: rollOutcome.buffMultiplier,
+								vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
+								avgArchetypeFit: rollOutcome.avgArchetypeFit,
+								staffingSupportMultiplier: rollOutcome.staffingSupportMultiplier,
+								gearPresenceMultiplier: rollOutcome.gearPresenceMultiplier,
+								luckDeltaPercent: rollOutcome.luckDeltaPercent,
+							},
+						}
+						: x,
+				),
+			};
+		});
+	};
+
+	const handleMinigameSuccess = () => {
+		if (!state.activeMinigame) return;
+		const { type, incidentId } = state.activeMinigame;
+
+		if (type === "hack") {
+			setState((s) => ({ ...s, activeMinigame: null }));
+			return;
+		}
+
+		const inc = state.incidents.find((i) => i.id === incidentId);
+		setState((s) => ({ ...s, activeMinigame: null }));
+		if (!inc) return;
+
+		finishIncidentResolutionForId(incidentId, {
+			success: true,
+			adjustedPercent: 100,
+			beforeLuckPercent: 100,
+			rolled: 1,
+			baseChancePercent: inc.successChance,
+			resourceMultiplier: 1,
+			buffMultiplier: 1,
+			vigilanteMultiplier: 1,
+			avgArchetypeFit: 1,
+			staffingSupportMultiplier: 1,
+			gearPresenceMultiplier: 1,
+			luckDeltaPercent: 0,
+		});
+	};
+
+	const handleMinigameFailure = () => {
+		if (!state.activeMinigame) return;
+		const { type, incidentId } = state.activeMinigame;
+
+		if (type === "hack") {
+			setState((s) => ({ ...s, activeMinigame: null }));
+			return;
+		}
+
+		const inc = state.incidents.find((i) => i.id === incidentId);
+		setState((s) => ({ ...s, activeMinigame: null }));
+		if (!inc) return;
+
+		finishIncidentResolutionForId(incidentId, {
+			success: false,
+			adjustedPercent: 0,
+			beforeLuckPercent: 0,
+			rolled: 100,
+			baseChancePercent: inc.successChance,
+			resourceMultiplier: 1,
+			buffMultiplier: 1,
+			vigilanteMultiplier: 1,
+			avgArchetypeFit: 1,
+			staffingSupportMultiplier: 1,
+			gearPresenceMultiplier: 1,
+			luckDeltaPercent: 0,
+		});
+	};
+
 	const handleDeployConfirm = (payload: {
 		vigilanteIds: string[];
 		resourceIds: string[];
@@ -2834,6 +3040,39 @@ export default function StreetMapScene({
 			resourceIds: payload.resourceIds,
 			buffIds: [],
 		});
+
+		const minigame = getMinigameForIncident(inc);
+		if (minigame) {
+			if (resolveIncidentTimeoutRef.current) {
+				clearTimeout(resolveIncidentTimeoutRef.current);
+			}
+			setDeployModalOpen(false);
+			setState((s) => {
+				const i = s.incidents.find((x) => x.id === id);
+				if (!i || i.status !== "active") return s;
+				const pool = applyDeployment(s.resourcePool, payload.resourceIds);
+				return {
+					...s,
+					resourcePool: pool,
+					incidents: s.incidents.map((x) =>
+						x.id === id
+							? {
+									...x,
+									status: "resolving" as const,
+									deployedResourceIds: [...payload.resourceIds],
+									deployedVigilanteIds: [...payload.vigilanteIds],
+								}
+							: x,
+					),
+					activeMinigame: {
+						type: minigame.type,
+						incidentId: id,
+						difficulty: minigame.difficulty,
+					},
+				};
+			});
+			return;
+		}
 
 		if (resolveIncidentTimeoutRef.current) {
 			clearTimeout(resolveIncidentTimeoutRef.current);
@@ -2879,6 +3118,7 @@ export default function StreetMapScene({
 				),
 			};
 		});
+
 		const RESOLVE_MS = 2600;
 		const finishIncidentResolution = () => {
 			resolveIncidentTimeoutRef.current = null;
@@ -2972,6 +3212,10 @@ export default function StreetMapScene({
 					? { ...prev, phase: "outcome" }
 					: prev,
 			);
+
+			if (inc.category === "disaster" && rollOutcome.success && Math.random() <= 1) {
+				setPendingHackMinigame({ incidentId: id });
+			}
 		};
 		resolveIncidentResumeFnRef.current = finishIncidentResolution;
 		resolveIncidentDueAtRef.current = Date.now() + RESOLVE_MS;
@@ -3189,14 +3433,22 @@ export default function StreetMapScene({
 		};
 	}, [isGameplayPausedByMinigame]);
 
+	// ── Expiry interval ───────────────────────────────────────────────────────────
+	// Keep a ref so the interval callback always reads the latest state without
+	// needing to be recreated (which was causing stale-closure bugs where stretched
+	// timestamps weren't visible to an already-running interval).
+	const stateForExpiryRef = useRef(state);
+	stateForExpiryRef.current = state;
+
 	useEffect(() => {
 		if (isGameplayPausedByMinigame) return;
 
 		const id = window.setInterval(() => {
 			const now = Date.now();
+			const s = stateForExpiryRef.current;
 
 			if (mode === "multiplayer" && sessionId) {
-				const expiredIds = state.incidents
+				const expiredIds = s.incidents
 					.filter((i) => i.status === "active" && now >= i.expiresAt)
 					.map((i) => i.id);
 
@@ -3206,52 +3458,50 @@ export default function StreetMapScene({
 
 				if (
 					selectedRecruitLeadId &&
-					!state.recruitLeads.some(
-						(r) => r.id === selectedRecruitLeadId,
-					)
+					!s.recruitLeads.some((r) => r.id === selectedRecruitLeadId)
 				) {
 					setSelectedRecruitLeadId(null);
 				}
 				return;
 			}
 
-			setState((s) => {
-				const now = Date.now();
+			setState((prev) => {
+				// No stretch needed here — already applied synchronously on unpause.
 				const expiredIncidentIds = new Set(
-					s.incidents
-						.filter(
-							(i) => i.status === "active" && now >= i.expiresAt,
-						)
+					prev.incidents
+						.filter((i) => i.status === "active" && now >= i.expiresAt)
 						.map((i) => i.id),
 				);
 				const expiredRecruitIds = new Set(
-					s.recruitLeads
+					prev.recruitLeads
 						.filter((r) => now >= r.expiresAt)
 						.map((r) => r.id),
 				);
-				if (
-					expiredIncidentIds.size === 0 &&
-					expiredRecruitIds.size === 0
-				)
-					return s;
+
+				if (expiredIncidentIds.size === 0 && expiredRecruitIds.size === 0) {
+					return prev;
+				}
+
 				return {
-					...s,
-					selectedIncidentId: expiredIncidentIds.has(
-						s.selectedIncidentId ?? "",
-					)
+					...prev,
+					selectedIncidentId: expiredIncidentIds.has(prev.selectedIncidentId ?? "")
 						? null
-						: s.selectedIncidentId,
-					incidents: s.incidents.filter(
-						(i) => !expiredIncidentIds.has(i.id),
-					),
-					recruitLeads: s.recruitLeads.filter(
-						(r) => !expiredRecruitIds.has(r.id),
-					),
+						: prev.selectedIncidentId,
+					incidents: prev.incidents.filter((i) => !expiredIncidentIds.has(i.id)),
+					recruitLeads: prev.recruitLeads.filter((r) => !expiredRecruitIds.has(r.id)),
+					careerStats: expiredIncidentIds.size > 0
+						? {
+							...prev.careerStats,
+							incidentsExpired: prev.careerStats.incidentsExpired + expiredIncidentIds.size,
+						}
+						: prev.careerStats,
 				};
 			});
 			if (
 				selectedRecruitLeadId &&
-				!state.recruitLeads.some((r) => r.id === selectedRecruitLeadId)
+				!stateForExpiryRef.current.recruitLeads.some(
+					(r) => r.id === selectedRecruitLeadId,
+				)
 			) {
 				setSelectedRecruitLeadId(null);
 			}
@@ -3259,11 +3509,9 @@ export default function StreetMapScene({
 		return () => window.clearInterval(id);
 	}, [
 		isGameplayPausedByMinigame,
-		selectedRecruitLeadId,
-		state.recruitLeads,
-		state.incidents,
 		mode,
 		sessionId,
+		selectedRecruitLeadId,
 	]);
 
 	const incidentCitizenPins = useMemo(() => {
@@ -3393,10 +3641,19 @@ export default function StreetMapScene({
 		[state.incidents, state.selectedIncidentId],
 	);
 
+	const availableTheftSites = useMemo(
+		() =>
+			THEFT_SITES.filter(
+				(site) => !state.consumedTheftSiteIds.includes(site.id),
+			),
+		[state.consumedTheftSiteIds],
+	);
+
 	const selectedTheftSite = useMemo(
 		() =>
-			THEFT_SITES.find((site) => site.id === selectedTheftSiteId) ?? null,
-		[selectedTheftSiteId],
+			availableTheftSites.find((site) => site.id === selectedTheftSiteId) ??
+			null,
+		[availableTheftSites, selectedTheftSiteId],
 	);
 
 	const incidentPanelRows = useMemo(() => {
@@ -3544,13 +3801,14 @@ export default function StreetMapScene({
 					onPoliceRenderUpdate={setPoliceRenderItems}
 					onPoliceEtaUpdate={setPoliceEtaItems}
 					onPoliceResolveIncident={handlePoliceResolveIncident}
+					paused={isGameplayPausedByMinigame}
 				/>
 				<CharacterMarkers
 					pins={visibleDynamicPins}
 					onSelect={handleCharacterSelect}
 				/>
 				<TheftSiteMarkers
-					sites={THEFT_SITES}
+					sites={availableTheftSites}
 					onSelect={handleTheftSiteSelect}
 				/>
 				<RecruitMarkers
@@ -3624,11 +3882,12 @@ export default function StreetMapScene({
 													expiresAt={
 														selectedRecruitLead.expiresAt
 													}
-													onExpire={() =>
+													onExpire={isGameplayPausedByMinigame ? () => {} : () =>
 														expireRecruitLead(
 															selectedRecruitLead.id,
 														)
 													}
+													paused={isGameplayPausedByMinigame}
 												/>
 											</div>
 										) : null}
@@ -3660,30 +3919,15 @@ export default function StreetMapScene({
 														{activeDossier.status}
 													</span>
 												) : null}
-												{typeof activeDossier.heat ===
-												"number" ? (
-													<span className="rounded-full border border-red-900/35 bg-red-950/20 px-3 py-1 text-[11px] uppercase tracking-[0.15em] text-red-300/75">
-														Heat{" "}
-														{activeDossier.heat}
-													</span>
-												) : null}
 											</div>
 											<p className="text-sm leading-6 text-amber-100/75">
-												{activeDossier.bio ??
-													"Backstory TBD."}
+												{activeDossier.bio ?? "Backstory TBD."}
 											</p>
 										</div>
 									</div>
 
 									<div className="mt-6 grid grid-cols-2 gap-3">
-										{(
-											[
-												"combat",
-												"stealth",
-												"tactics",
-												"nerve",
-											] as const
-										).map((stat) => (
+										{(["combat", "stealth", "tactics", "nerve"] as const).map((stat) => (
 											<div
 												key={stat}
 												className="rounded-xl border border-amber-900/30 bg-black/25 p-3"
@@ -3705,12 +3949,12 @@ export default function StreetMapScene({
 										<div className="mt-3 flex flex-wrap gap-2">
 											{(activeDossier.traits ?? []).map(
 												(trait: string) => (
-													<span
-														key={trait}
-														className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
-													>
-														{trait}
-													</span>
+												<span
+													key={trait}
+													className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
+												>
+													{trait}
+												</span>
 												),
 											)}
 										</div>
@@ -3906,12 +4150,12 @@ export default function StreetMapScene({
 									<div className="mt-3 flex flex-wrap gap-2">
 										{selectedTheftSite.rewardIds.map(
 											(id, idx) => (
-												<span
-													key={`${id}-${idx}`}
-													className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
-												>
-													{id.toUpperCase()}
-												</span>
+											<span
+												key={`${id}-${idx}`}
+												className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
+											>
+												{id.toUpperCase()}
+											</span>
 											),
 										)}
 									</div>
@@ -4075,9 +4319,8 @@ export default function StreetMapScene({
 												<IncidentTimerBar
 													createdAt={inc.createdAt}
 													expiresAt={inc.expiresAt}
-													onExpire={() =>
-														expireIncident(inc.id)
-													}
+													onExpire={isGameplayPausedByMinigame ? () => {} : () => expireIncident(inc.id)}
+													paused={isGameplayPausedByMinigame}
 												/>
 											) : (
 												<div
@@ -4340,8 +4583,41 @@ export default function StreetMapScene({
 					success={chanceRollOverlay.success}
 					phase={chanceRollOverlay.phase}
 					hadDeployedGear={chanceRollOverlay.hadDeployedGear}
-					onContinue={() => setChanceRollOverlay(null)}
+					onContinue={() => {
+						const pending = pendingHackMinigame;
+						setChanceRollOverlay(null);
+						if (pending) {
+							setPendingHackMinigame(null);
+							setState((s) => ({
+								...s,
+								activeMinigame: {
+									type: "hack",
+									incidentId: pending.incidentId,
+									difficulty: 0,
+								},
+							}));
+						}
+					}}
 				/>
+			)}
+
+			{state.activeMinigame && (
+				<>
+					{state.activeMinigame.type === "fire" && (
+						<FireMinigame
+							difficulty={state.activeMinigame.difficulty}
+							onSuccess={handleMinigameSuccess}
+							onFailure={handleMinigameFailure}
+						/>
+					)}
+					{state.activeMinigame.type === "hack" && (
+						<HackMinigame
+							difficulty={state.activeMinigame.difficulty}
+							onSuccess={handleMinigameSuccess}
+							onFailure={handleMinigameFailure}
+						/>
+					)}
+				</>
 			)}
 
 			<IncidentDeployModal
@@ -4367,10 +4643,8 @@ export default function StreetMapScene({
 				vigilanteSheets={vigilantes}
 				resourcePool={state.resourcePool}
 				onClose={() => setDeployModalOpen(false)}
-				onIncidentExpire={() => {
-					if (selectedIncident?.status === "active") {
-						expireIncident(selectedIncident.id);
-					}
+				onIncidentExpire={isGameplayPausedByMinigame ? () => {} : () => {
+					if (selectedIncident?.status === "active") expireIncident(selectedIncident.id);
 					setDeployModalOpen(false);
 				}}
 				onConfirm={handleDeployConfirm}
@@ -4399,8 +4673,23 @@ export default function StreetMapScene({
 						? "Move the stolen goods fast, keep the layout clean, and get out before the area locks down."
 						: "Organize the emergency locker to recover extra supplies before time runs out."
 				}
+				rewardMode={
+					inventorySorterMode === "resource-theft"
+						? "random-resource"
+						: "none"
+				}
 			/>
-
+			<PoliceCaptureModal
+				open={policeCaptureState.open}
+				capturedIds={policeCaptureState.capturedIds}
+				vigilanteSheets={vigilantes}
+				onClose={() =>
+					setPoliceCaptureState({
+						open: false,
+						capturedIds: [],
+					})
+				}
+			/>
 			<div className="pointer-events-none absolute inset-x-0 bottom-0 z-[980] max-h-[min(92vh,100%)] overflow-hidden">
 				<AnimatePresence initial={false} mode="wait">
 					{state.showInventoryPanel ? (
