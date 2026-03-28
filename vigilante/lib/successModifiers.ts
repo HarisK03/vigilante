@@ -7,12 +7,12 @@
  */
 
 import type { IncidentArchetype } from "@/lib/incidentTemplates";
+import { getIncidentSpecificBonus } from "./incidentSpecificBonuses";
 
 export type VigilanteStats = {
-	combat: number;
-	stealth: number;
-	tactics: number;
-	nerve: number;
+	strength: number;
+	intelligence: number;
+	speed: number;
 };
 
 /** Stats-only slice (e.g. from VigilanteSheet) */
@@ -30,11 +30,11 @@ export const STAT_WEIGHTS: Record<
 	IncidentArchetype,
 	Partial<Record<keyof VigilanteStats, number>>
 > = {
-	crime: { combat: 0.4, stealth: 0.3, tactics: 0.2, nerve: 0.1 },
-	fire_rescue: { nerve: 0.4, tactics: 0.3, combat: 0.2, stealth: 0.1 },
-	medical: { tactics: 0.4, nerve: 0.35, combat: 0.15, stealth: 0.1 },
-	disaster: { tactics: 0.35, nerve: 0.35, combat: 0.2, stealth: 0.1 },
-	traffic: { tactics: 0.4, stealth: 0.2, combat: 0.2, nerve: 0.2 },
+	crime: { strength: 0.4, speed: 0.3, intelligence: 0.3 },
+	fire_rescue: { intelligence: 0.4, strength: 0.3, speed: 0.3 },
+	medical: { intelligence: 0.5, speed: 0.3, strength: 0.2 },
+	disaster: { intelligence: 0.4, strength: 0.3, speed: 0.3 },
+	traffic: { speed: 0.4, intelligence: 0.35, strength: 0.25 },
 };
 
 /**
@@ -228,6 +228,8 @@ export type ComputeAdjustedSuccessInput = {
 	/** Base % from incident (0–100) */
 	baseChancePercent: number;
 	archetype: IncidentArchetype;
+	/** Incident type label (e.g. "Kitchen fire") for specific resource relevance */
+	incidentTypeLabel?: string;
 	vigilantes: VigilanteForSuccess[];
 	/** Inventory ids (e.g. r2) and/or semantic keys (fire_extinguisher) */
 	resourceIds: string[];
@@ -256,6 +258,8 @@ export type ComputeAdjustedSuccessResult = {
 	resourceMultiplier: number;
 	/** Product of buff factors */
 	buffMultiplier: number;
+	/** Incident-specific resource relevance multiplier (from incident type) */
+	incidentSpecificMultiplier: number;
 	/** 1 + vigilante bonus capped */
 	vigilanteMultiplier: number;
 	/**
@@ -346,6 +350,35 @@ function productBuffMultipliers(
 }
 
 /**
+ * Compute incident-specific resource relevance multiplier.
+ * applies bonuses for bringing the right tools for this specific incident type.
+ */
+function computeIncidentSpecificMultiplier(
+    incidentTypeLabel: string | undefined,
+    resourceIds: string[],
+): number {
+    if (!incidentTypeLabel || resourceIds.length === 0) return 1;
+
+    const specificBonuses = getIncidentSpecificBonus(incidentTypeLabel);
+    if (Object.keys(specificBonuses).length === 0) return 1;
+
+    let p = 1;
+    for (const raw of resourceIds) {
+        const key = resolveResourceKey(raw);
+        const bonus = specificBonuses[key];
+        if (bonus !== undefined) {
+            // Apply same clamping as other multipliers for consistency
+            const clamped = Math.max(
+                PER_ITEM_FACTOR_MIN,
+                Math.min(PER_ITEM_FACTOR_MAX, bonus),
+            );
+            p *= clamped;
+        }
+    }
+    return p;
+}
+
+/**
  * Combined success %: base × gear × buffs × vigilante fit × staffing × kit
  * presence, then small luck jitter, then flat bonus (e.g. Rapid Response).
  */
@@ -355,6 +388,7 @@ export function computeAdjustedSuccessChance(
 	const {
 		baseChancePercent,
 		archetype,
+		incidentTypeLabel,
 		vigilantes,
 		resourceIds,
 		buffIds = [],
@@ -369,6 +403,10 @@ export function computeAdjustedSuccessChance(
 		RESOURCE_ARCHETYPE_MULTIPLIER,
 	);
 	const buffMultiplier = productBuffMultipliers(archetype, buffIds);
+	const incidentSpecificMultiplier = computeIncidentSpecificMultiplier(
+		incidentTypeLabel,
+		resourceIds,
+	);
 	const { multiplier: vigilanteMultiplier, avgArchetypeFit } = vigilanteStatFit(
 		archetype,
 		vigilantes,
@@ -383,6 +421,7 @@ export function computeAdjustedSuccessChance(
 		baseChancePercent *
 		resourceMultiplier *
 		buffMultiplier *
+		incidentSpecificMultiplier *
 		vigilanteMultiplier *
 		staffingSupportMultiplier *
 		gearPresenceMultiplier;
@@ -401,6 +440,7 @@ export function computeAdjustedSuccessChance(
 		beforeLuckPercent,
 		resourceMultiplier,
 		buffMultiplier,
+		incidentSpecificMultiplier,
 		vigilanteMultiplier,
 		avgArchetypeFit,
 		staffingSupportMultiplier,

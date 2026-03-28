@@ -50,15 +50,145 @@ import { readSave, touchSave, type SaveSlotId } from "@/lib/saves";
 import { DEFAULT_ACHIEVEMENT_PROGRESS } from "@/lib/achievements";
 import type { UnlockedAchievement } from "@/lib/gameTypes";
 import {
-	computeIncidentRollOutcome,
 	type DispatchRollBreakdown,
+	type IncidentRollResolution,
+	ROLL_CREW_CORRELATION_STRENGTH,
 } from "@/lib/incidentRoll";
+import { calculateSimpleSuccess, generateRoll } from "@/lib/simpleSuccessCalc";
 import {
-	getTimerSlowdownMultiplier,
 	getPoliceSlowdownMultiplier,
+	getTimerSlowdownMultiplier,
 	rollScavengerSalvage,
-	getRapidResponseBonus,
 } from "@/lib/successModifiers";
+
+// Helper to call AI success calculation API
+async function callAISuccessCalc(params: {
+	incidentType: string;
+	incidentDescription?: string;
+	vigilantes: Array<{
+		name: string;
+		stats: { strength: number; intelligence: number; speed: number };
+	}>;
+	resources: string[];
+	buffIds?: string[];
+}): Promise<{ successPercent: number; rawOutput?: string } | null> {
+	try {
+		const res = await fetch("/api/success-calc", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(params),
+		});
+		if (!res.ok) {
+			console.error("[AI Success Calc] API error:", res.status);
+			return null;
+		}
+		const data = await res.json();
+		if (data?.successPercent !== undefined) {
+			return {
+				successPercent: data.successPercent,
+				rawOutput: data.rawOutput,
+			};
+		}
+		return null;
+	} catch (e) {
+		console.error("[AI Success Calc] Exception:", e);
+		return null;
+	}
+}
+
+// Fallback success calculation when AI is unavailable (simpler heuristic, not deterministic formulas)
+function calculateFallbackSuccessPercent(
+	baseChancePercent: number,
+	archetype: string,
+	vigilantes: typeof vigilantes,
+	resourceIds: string[],
+	buffIds: string[],
+): number {
+	// Very simple estimate: base + small bonus for team quality
+	let adjusted = baseChancePercent;
+
+	// Team size bonus (small — AI should handle this)
+	if (vigilantes.length >= 2) adjusted += 5;
+	if (vigilantes.length >= 3) adjusted += 3;
+
+	// Resources presence bonus (very modest — AI should handle alignment)
+	if (resourceIds.length >= 2) adjusted += 3;
+	if (resourceIds.length >= 4) adjusted += 2;
+
+	// Buffs bonus (small)
+	if (buffIds.length >= 1) adjusted += 3;
+
+	// Clamp to valid range
+	return Math.max(1, Math.min(99, Math.round(adjusted)));
+}
+
+// Generate a synthetic breakdown for the UI (since AI only gives a single percentage)
+function makeSyntheticBreakdown(
+	baseChancePercent: number,
+	adjustedPercent: number,
+	resourceCount: number,
+	buffCount: number,
+	avgStats: { strength: number; intelligence: number; speed: number },
+	totalStats: { strength: number; intelligence: number; speed: number },
+	aiReasoning?: string,
+): DispatchRollBreakdown {
+	// Decompose adjusted percent into plausible multipliers
+	// Formula: adjusted ≈ base × resource_mult × buff_mult × vigilante_mult × staffing × gear_presence × (1 ± luck)
+
+	// Staffing multiplier: smoothly <1 for <2 operatives
+	const staffingSupportMultiplier = Math.min(1, resourceCount / 2);
+
+	// Gear presence multiplier: asymptotic to 1.0 as more items added
+	const gearPresenceMultiplier =
+		0.7 + 0.3 * (1 - Math.exp(-resourceCount * 0.55));
+
+	// Estimate beforeLuck by subtracting estimated luck jitter (± up to ~5)
+	const estimatedLuck = Math.max(
+		-5,
+		Math.min(5, adjustedPercent - baseChancePercent * 2),
+	);
+	const beforeLuckPercent = Math.round(adjustedPercent - estimatedLuck);
+
+	// Resource multiplier: each resource adds ~8-12%, diminishing after 3-4 items
+	const resourceMultiplier = 1 + Math.min(resourceCount * 0.12, 0.6); // cap around 1.6
+
+	// Buff multiplier: each buff adds ~6-10%
+	const buffMultiplier = 1 + Math.min(buffCount * 0.08, 0.5); // cap around 1.5
+
+	// Solve for vigilante multiplier from remaining factor
+	const baseWithStaffAndGear =
+		baseChancePercent * staffingSupportMultiplier * gearPresenceMultiplier;
+	const remainingForVigilanteAndLuck =
+		beforeLuckPercent / (resourceMultiplier * buffMultiplier);
+	const vigilanteMultiplier =
+		remainingForVigilanteAndLuck / baseWithStaffAndGear;
+	const clampedVigilanteMultiplier = Math.max(
+		0.5,
+		Math.min(2, vigilanteMultiplier),
+	);
+
+	// Derive avgArchetypeFit from vigilante multiplier
+	// vigilanteMultiplier = 1 + avgArchetypeFit * VIGILANTE_BONUS_PER_FIT (with cap)
+	// VIGILANTE_BONUS_PER_FIT = 0.18, VIGILANTE_BONUS_CAP = 0.13 → max avgArchetypeFit ≈ 0.72
+	const rawFit = (clampedVigilanteMultiplier - 1) / 0.18;
+	const avgArchetypeFit = Math.max(0, Math.min(0.722, rawFit));
+
+	const luckDeltaPercent = adjustedPercent - beforeLuckPercent;
+
+	return {
+		baseChancePercent,
+		resourceMultiplier,
+		buffMultiplier,
+		incidentSpecificMultiplier: 1, // synthetic - not tracked historically
+		vigilanteMultiplier: clampedVigilanteMultiplier,
+		avgArchetypeFit,
+		staffingSupportMultiplier,
+		gearPresenceMultiplier,
+		luckDeltaPercent,
+		aiReasoning,
+	};
+}
+
 import VettingMinigameModal from "@/components/game/VettingMinigameModal";
 import {
 	getSessionMarkers,
@@ -1726,12 +1856,16 @@ export default function StreetMapScene({
 		timestamp: number;
 	};
 
-	const [repNotifications, setRepNotifications] = useState<ReputationNotification[]>([]);
+	const [repNotifications, setRepNotifications] = useState<
+		ReputationNotification[]
+	>([]);
 
 	// Helper to trigger reputation loss animation
 	const triggerReputationLoss = useCallback((amount: number) => {
 		if (amount <= 0) return; // Only show for losses
-		console.log(`[Reputation] Lost ${amount} reputation - triggering animation`);
+		console.log(
+			`[Reputation] Lost ${amount} reputation - triggering animation`,
+		);
 		const id = Date.now() + Math.random();
 		setRepNotifications((prev) => [
 			...prev,
@@ -3073,7 +3207,7 @@ export default function StreetMapScene({
 		});
 	};
 
-	const handleDeployConfirm = (payload: {
+	const handleDeployConfirm = async (payload: {
 		vigilanteIds: string[];
 		resourceIds: string[];
 	}) => {
@@ -3104,17 +3238,45 @@ export default function StreetMapScene({
 		const assignedVigs = vigilantes.filter((v) =>
 			payload.vigilanteIds.includes(v.id),
 		);
-		const rollOutcome = computeIncidentRollOutcome({
+
+		// Calculate rapid response bonus (b9)
+		let rapidResponseBonus = 0;
+		if (state.purchasedUpgradeIds.includes("b9")) {
+			const elapsedMs = Date.now() - inc.createdAt;
+			if (elapsedMs <= 10_000) {
+				rapidResponseBonus = 15;
+			}
+		}
+
+		// Calculate success chance using simple deterministic heuristic
+		const result = calculateSimpleSuccess(
+			inc.successChance,
+			inc.category,
+			inc.typeLabel, // pass incident specific type for resource relevance bonuses
+			assignedVigs,
+			payload.resourceIds,
+			state.purchasedUpgradeIds,
+			rapidResponseBonus,
+		);
+
+		// Calculate roll based on archetype fit
+		const rolled = generateRoll(result.avgArchetypeFit);
+
+		const rollOutcome: IncidentRollResolution = {
+			success: rolled < result.beforeLuckPercent,
+			adjustedPercent: result.successPercent,
+			beforeLuckPercent: result.beforeLuckPercent,
+			rolled,
 			baseChancePercent: inc.successChance,
-			archetype: inc.category,
-			vigilantes: assignedVigs.map((v) => ({ stats: v.stats })),
-			resourceIds: payload.resourceIds,
-			buffIds: state.purchasedUpgradeIds,
-			flatBonusPercent: getRapidResponseBonus(
-				state.purchasedUpgradeIds,
-				inc.createdAt,
-			),
-		});
+			resourceMultiplier: 1, // placeholder - we don't use multipliers anymore
+			buffMultiplier: 1, // placeholder - we don't use multipliers anymore
+			incidentSpecificMultiplier: result.incidentSpecificMultiplier,
+			vigilanteMultiplier: 1, // placeholder - we don't use multipliers anymore
+			avgArchetypeFit: result.avgArchetypeFit,
+			staffingSupportMultiplier: 1, // placeholder - we don't use multipliers anymore
+			gearPresenceMultiplier: 1, // placeholder - we don't use multipliers anymore
+			luckDeltaPercent: 0, // placeholder - luck is baked into the roll generation
+		};
 
 		const minigame = getMinigameForIncident(inc);
 		if (minigame) {
@@ -3172,6 +3334,8 @@ export default function StreetMapScene({
 				baseChancePercent: rollOutcome.baseChancePercent,
 				resourceMultiplier: rollOutcome.resourceMultiplier,
 				buffMultiplier: rollOutcome.buffMultiplier,
+				incidentSpecificMultiplier:
+					rollOutcome.incidentSpecificMultiplier,
 				vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
 				avgArchetypeFit: rollOutcome.avgArchetypeFit,
 				staffingSupportMultiplier:
@@ -3277,6 +3441,8 @@ export default function StreetMapScene({
 											rollOutcome.resourceMultiplier,
 										buffMultiplier:
 											rollOutcome.buffMultiplier,
+										incidentSpecificMultiplier:
+											rollOutcome.incidentSpecificMultiplier,
 										vigilanteMultiplier:
 											rollOutcome.vigilanteMultiplier,
 										avgArchetypeFit:
@@ -3904,16 +4070,18 @@ export default function StreetMapScene({
 							ease: [0.25, 0.1, 0.25, 1],
 						}}
 						style={{
-							position: 'fixed',
+							position: "fixed",
 							left: 20,
 							top: 20 + idx * 60,
 							zIndex: 10000,
-							pointerEvents: 'none',
+							pointerEvents: "none",
 						}}
 					>
 						<div className="flex items-center gap-1.5 rounded-md border border-red-900 bg-red-900/30 px-3 py-1.5 text-xs font-bold text-red-300 shadow backdrop-blur-sm">
 							<span className="text-red-200">Rep</span>
-							<span className="text-red-100 text-sm">-{notif.amount}</span>
+							<span className="text-red-100 text-sm">
+								-{notif.amount}
+							</span>
 						</div>
 					</motion.div>
 				))}
@@ -4101,13 +4269,12 @@ export default function StreetMapScene({
 										</div>
 									</div>
 
-									<div className="mt-6 grid grid-cols-2 gap-3">
+									<div className="mt-6 grid grid-cols-3 gap-3">
 										{(
 											[
-												"combat",
-												"stealth",
-												"tactics",
-												"nerve",
+												"strength",
+												"intelligence",
+												"speed",
 											] as const
 										).map((stat) => (
 											<div
@@ -4122,24 +4289,6 @@ export default function StreetMapScene({
 												</div>
 											</div>
 										))}
-									</div>
-
-									<div className="mt-6 rounded-xl border border-amber-900/30 bg-black/25 p-4">
-										<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
-											Traits
-										</div>
-										<div className="mt-3 flex flex-wrap gap-2">
-											{(activeDossier.traits ?? []).map(
-												(trait: string) => (
-													<span
-														key={trait}
-														className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
-													>
-														{trait}
-													</span>
-												),
-											)}
-										</div>
 									</div>
 								</div>
 
@@ -4439,10 +4588,19 @@ export default function StreetMapScene({
 							}}
 							className="pointer-events-auto ml-2 mt-0 mb-4 flex max-h-[min(85vh,820px)] w-80 max-w-[80vw] flex-col rounded-xl border border-amber-900/40 bg-black/55 shadow-xl shadow-black/60 backdrop-blur-md"
 						>
-							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
+							<div className="relative flex items-center px-4 py-3 border-b border-amber-900/40">
 								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
 									Incidents
 								</div>
+								{selectedIncident?.status === "active" && (
+									<button
+										type="button"
+										onClick={() => setDeployModalOpen(true)}
+										className="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer rounded-lg border border-amber-700/45 bg-amber-950/25 px-2.5 py-1 text-[11px] font-medium text-amber-100/95 transition hover:border-amber-500/40 hover:bg-amber-950/40"
+									>
+										Deploy
+									</button>
+								)}
 							</div>
 
 							<div className="relative min-h-0 flex-1 overflow-y-auto px-3 py-2 space-y-2 vigilante-hide-scrollbar">
@@ -4536,18 +4694,6 @@ export default function StreetMapScene({
 								<div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-linear-to-t from-black/70 to-transparent" />
 							</div>
 
-							{selectedIncident?.status === "active" && (
-								<div className="shrink-0 border-t border-amber-900/40 px-3 py-2.5">
-									<button
-										type="button"
-										onClick={() => setDeployModalOpen(true)}
-										className="w-full cursor-pointer rounded-lg border border-amber-700/45 bg-amber-950/25 py-2.5 text-[12px] font-medium text-amber-100/95 transition hover:border-amber-500/40 hover:bg-amber-950/40"
-									>
-										Deploy
-									</button>
-								</div>
-							)}
-
 							{selectedIncident?.status === "resolving" && (
 								<div className="shrink-0 border-t border-amber-900/40 px-3 py-3 text-center text-[11px] text-amber-200/75">
 									Resolving…
@@ -4576,103 +4722,7 @@ export default function StreetMapScene({
 
 			<div
 				className="fixed left-0 flex items-start"
-				style={{ top: 160, zIndex: 2000 }}
-			>
-				<div className="pointer-events-auto">
-					<button
-						type="button"
-						onClick={() => toggleExclusiveLeftPanel("minigame")}
-						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1"
-					>
-						<span>Minigames</span>
-						<span className="text-[11px] flex items-center">
-							{state.showMinigamePanel ? (
-								<ChevronLeft className="w-3 h-3" aria-hidden />
-							) : (
-								<ChevronRight className="w-3 h-3" aria-hidden />
-							)}
-						</span>
-					</button>
-				</div>
-
-				<AnimatePresence initial={false}>
-					{state.showMinigamePanel && (
-						<motion.div
-							key="minigame-panel"
-							initial={{ x: -320, opacity: 0 }}
-							animate={{ x: 0, opacity: 1 }}
-							exit={{ x: -320, opacity: 0 }}
-							transition={{
-								type: "tween",
-								duration: 0.22,
-								ease: "easeOut",
-							}}
-							className="pointer-events-auto ml-2 w-80 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
-						>
-							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
-								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
-									Minigames
-								</div>
-							</div>
-
-							<div className="px-3 py-2 space-y-2">
-								{MINIGAME_OPTIONS.map((game) => (
-									<button
-										key={game.id}
-										type="button"
-										onClick={() => {
-											if (chanceRollOverlay) return;
-											if (deployModalOpen) return;
-											if (showVettingModal) return;
-
-											if (
-												game.id === "inventory-sorter"
-											) {
-												setInventorySorterMode(
-													"supply-recovery",
-												);
-											}
-										}}
-										className="w-full text-left rounded-lg border border-amber-900/50 bg-black/40 px-3 py-3 text-xs text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100 transition-colors cursor-pointer"
-									>
-										<div className="flex items-start gap-3">
-											<div className="mt-0.5 h-8 w-8 rounded-lg border border-amber-800/60 bg-amber-950/30 flex items-center justify-center text-amber-300">
-												<Package2
-													className="w-4 h-4"
-													aria-hidden
-												/>
-											</div>
-											<div className="flex-1">
-												<div className="flex items-center justify-between gap-2">
-													<div className="font-semibold text-[11px] uppercase tracking-[0.16em]">
-														{game.title}
-													</div>
-													{game.status && (
-														<div className="text-[10px] uppercase tracking-[0.16em] text-amber-400/60">
-															{game.status}
-														</div>
-													)}
-												</div>
-												<div className="mt-1 text-[11px] text-amber-200/60 line-clamp-2">
-													{game.description}
-												</div>
-											</div>
-										</div>
-									</button>
-								))}
-
-								<div className="rounded-lg border border-dashed border-amber-900/40 bg-black/20 px-3 py-3 text-[11px] text-amber-200/35">
-									More minigames can be added here later.
-								</div>
-							</div>
-						</motion.div>
-					)}
-				</AnimatePresence>
-			</div>
-
-			<div
-				className="fixed left-0 flex items-start"
-				style={{ top: 270, zIndex: 2000 }}
+				style={{ top: 120, zIndex: 2000 }}
 			>
 				<div className="pointer-events-auto">
 					<button
@@ -4830,6 +4880,7 @@ export default function StreetMapScene({
 								summary: selectedIncident.summary,
 								createdAt: selectedIncident.createdAt,
 								expiresAt: selectedIncident.expiresAt,
+								successChance: selectedIncident.successChance,
 							}
 						: null
 				}
@@ -4847,6 +4898,7 @@ export default function StreetMapScene({
 							}
 				}
 				onConfirm={handleDeployConfirm}
+				purchasedUpgradeIds={state.purchasedUpgradeIds}
 			/>
 
 			<InventorySorterModal
