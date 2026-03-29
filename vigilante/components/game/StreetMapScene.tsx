@@ -32,6 +32,7 @@ import IncidentDeployModal from "./IncidentDeployModal";
 import GameOverOverlay from "./GameOverOverlay";
 import { IncidentTimerBar } from "./IncidentTimerBar";
 import { vigilantes } from "@/app/components/data/vigilante";
+import { useSfx } from "@/lib/sfx";
 import {
 	DEFAULT_RESOURCE_POOL,
 	applyDeployment,
@@ -1674,6 +1675,9 @@ export default function StreetMapScene({
 
 	// Achievement tracking
 	const achievements = useAchievements(state, setState);
+
+	// Sound effects
+	const { play: playSfx } = useSfx();
 
 	const [pendingHackMinigame, setPendingHackMinigame] = useState<{
 		incidentId: string;
