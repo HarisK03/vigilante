@@ -18,6 +18,7 @@ import { IncidentTimerBar } from "@/components/game/IncidentTimerBar";
 import type { IncidentArchetype } from "@/lib/incidentTemplates";
 import { canStageDeployment, type ResourcePoolEntry } from "@/lib/resourcePool";
 import { isVigilanteRecovering } from "@/lib/vigilanteInjury";
+import { calculateSimpleSuccess } from "@/lib/simpleSuccessCalc";
 
 const EMPTY_INJURY: Record<string, number> = {};
 
@@ -66,6 +67,10 @@ function flattenCounts(c: Record<string, number>): string[] {
 	return out;
 }
 
+function titleCase(str: string) {
+	return str.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export type DeployPayload = {
 	vigilanteIds: string[];
 	resourceIds: string[];
@@ -81,16 +86,16 @@ type Props = {
 		summary: string;
 		createdAt: number;
 		expiresAt: number;
+		successChance: number;
 	} | null;
 	ownedVigilanteIds: string[];
-	/** Recovering vigilantes cannot be selected. */
 	vigilanteInjuryUntil?: Record<string, number>;
 	vigilanteSheets: VigilanteSheet[];
 	resourcePool: Record<string, ResourcePoolEntry>;
 	onClose: () => void;
-	/** When the incident timer runs out (same as list / map expiry). */
 	onIncidentExpire?: () => void;
 	onConfirm: (payload: DeployPayload) => void;
+	purchasedUpgradeIds: string[];
 };
 
 export default function IncidentDeployModal({
@@ -103,6 +108,7 @@ export default function IncidentDeployModal({
 	onClose,
 	onIncidentExpire,
 	onConfirm,
+	purchasedUpgradeIds,
 }: Props) {
 	const injury = vigilanteInjuryUntil ?? EMPTY_INJURY;
 	const [now, setNow] = useState(() => Date.now());
@@ -160,7 +166,6 @@ export default function IncidentDeployModal({
 		});
 	};
 
-	/** Drop injured crew every tick to keep selection valid. */
 	useEffect(() => {
 		if (!open || !incident) return;
 		setVigSet((prev) => {
@@ -226,6 +231,31 @@ export default function IncidentDeployModal({
 		});
 	};
 
+	// Calculate success chance
+	const successResult = useMemo(() => {
+		if (!incident || vigSet.size === 0) return null;
+
+		let rapidResponseBonus = 0;
+		if (purchasedUpgradeIds.includes("b9")) {
+			const elapsedMs = Date.now() - incident.createdAt;
+			if (elapsedMs <= 10_000) {
+				rapidResponseBonus = 15;
+			}
+		}
+
+		return calculateSimpleSuccess(
+			incident.successChance,
+			incident.category,
+			incident.typeLabel,
+			Array.from(vigSet).map(
+				(id) => vigilanteSheets.find((v) => v.id === id)!,
+			),
+			Object.keys(resCounts).filter((id) => resCounts[id] > 0),
+			purchasedUpgradeIds,
+			rapidResponseBonus,
+		);
+	}, [incident, vigSet, resCounts, purchasedUpgradeIds]);
+
 	if (typeof document === "undefined") return null;
 
 	return createPortal(
@@ -255,6 +285,7 @@ export default function IncidentDeployModal({
 						className="relative z-10 w-full max-w-lg rounded-2xl border border-amber-900/45 bg-[#0a0908]/95 text-amber-100 shadow-[0_24px_80px_rgba(0,0,0,0.65)] [&>*:first-child]:rounded-t-2xl [&>*:last-child]:rounded-b-2xl"
 						onClick={(e) => e.stopPropagation()}
 					>
+						{/* Header */}
 						<div className="flex items-start justify-between gap-3 border-b border-amber-900/35 px-5 py-4">
 							<div className="min-w-0">
 								<p
@@ -273,9 +304,7 @@ export default function IncidentDeployModal({
 									key={incident.id}
 									createdAt={incident.createdAt}
 									expiresAt={incident.expiresAt}
-									onExpire={() => {
-										onIncidentExpire?.();
-									}}
+									onExpire={onIncidentExpire}
 								/>
 							</div>
 							<button
@@ -287,6 +316,7 @@ export default function IncidentDeployModal({
 							</button>
 						</div>
 
+						{/* Crew Selection */}
 						<div className="space-y-4 px-5 py-4">
 							<section>
 								<h3 className="text-xs font-medium text-amber-400/90">
@@ -316,22 +346,19 @@ export default function IncidentDeployModal({
 														"relative flex h-[4.75rem] w-[4.75rem] shrink-0 overflow-hidden rounded-2xl border transition select-none sm:h-[5.25rem] sm:w-[5.25rem]",
 														inj
 															? "cursor-not-allowed border-rose-900/40 bg-black/25 opacity-50 grayscale"
-															: [
-																	"cursor-pointer",
-																	on
-																		? "border-amber-500/55 bg-amber-950/50 shadow-md shadow-amber-950/35 ring-2 ring-amber-500/25"
-																		: "border-amber-900/45 bg-black/35 hover:border-amber-700/45 hover:bg-black/45",
-																].join(" "),
+															: on
+																? "cursor-pointer border-amber-500/55 bg-amber-950/50 shadow-md shadow-amber-950/35 ring-2 ring-amber-500/25"
+																: "cursor-pointer border-amber-900/45 bg-black/35 hover:border-amber-700/45 hover:bg-black/45",
 													].join(" ")}
 												>
 													<CrewPortraitThumb
 														portrait={v.portrait}
 													/>
-													{inj ? (
+													{inj && (
 														<span className="pointer-events-none absolute inset-x-0 bottom-0 bg-rose-950/80 py-0.5 text-center text-[9px] font-medium uppercase tracking-wide text-rose-200/90">
 															Injured
 														</span>
-													) : null}
+													)}
 												</button>
 											);
 										})}
@@ -339,6 +366,7 @@ export default function IncidentDeployModal({
 								)}
 							</section>
 
+							{/* Gear Selection */}
 							<section>
 								<h3 className="text-xs font-medium text-amber-400/90">
 									Gear
@@ -418,27 +446,50 @@ export default function IncidentDeployModal({
 							</section>
 						</div>
 
-						<div className="flex items-center justify-between border-t border-amber-900/35 bg-black/30 px-5 py-4">
-							<p className="text-xs text-amber-200/30">
-								At least one vigilante must be deployed
-							</p>
-							<div className="flex items-center gap-2">
-								<button
-									type="button"
-									onClick={onClose}
-									className="cursor-pointer rounded-lg border border-amber-900/45 px-4 py-2 text-sm text-amber-200/75 transition hover:border-amber-700/50 hover:text-amber-50"
-								>
-									Cancel
-								</button>
-								<button
-									type="button"
-									disabled={!canSend}
-									onClick={handleConfirm}
-									className="cursor-pointer rounded-lg border border-amber-600/55 bg-amber-950/40 px-5 py-2 text-sm font-medium text-amber-50 transition hover:bg-amber-900/35 disabled:cursor-not-allowed disabled:opacity-35"
-								>
-									Deploy
-								</button>
+						{/* Success Chance Breakdown */}
+						{successResult && (
+							<div className="space-y-2 px-5 py-4">
+								<h3 className="text-xs font-medium text-amber-400/90">
+									Success Chance
+								</h3>
+								<p className="text-4xl font-black tracking-tight tabular-nums">
+									{successResult.successPercent}%
+								</p>
+								<div className="flex flex-col gap-1">
+									{successResult.breakdown.map((item, i) => (
+										<div
+											key={i}
+											className="flex justify-between text-xs text-amber-200/70"
+										>
+											<span>{titleCase(item.label)}</span>
+											<span>
+												{item.value > 0
+													? `+${item.value}%`
+													: `${item.value}%`}
+											</span>
+										</div>
+									))}
+								</div>
 							</div>
+						)}
+
+						{/* Footer */}
+						<div className="flex items-center justify-end gap-2 border-t border-amber-900/35 bg-black/30 px-5 py-4">
+							<button
+								type="button"
+								onClick={onClose}
+								className="rounded-lg border border-amber-900/40 px-3 py-1.5 text-xs text-amber-200/60 transition hover:border-amber-700/50 hover:text-amber-100"
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								onClick={handleConfirm}
+								disabled={!canSend}
+								className="cursor-pointer rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-1.5 text-xs font-medium text-amber-200 transition hover:border-amber-500 hover:bg-amber-900/40 disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								Dispatch
+							</button>
 						</div>
 					</motion.div>
 				</motion.div>

@@ -342,13 +342,12 @@ function InventoryVigilanteDossierPane({
 							</div>
 						</div>
 
-						<div className="mt-6 grid grid-cols-2 gap-3">
+						<div className="mt-6 grid grid-cols-3 gap-3">
 							{(
 								[
-									"combat",
-									"stealth",
-									"tactics",
-									"nerve",
+									"strength",
+									"intelligence",
+									"speed",
 								] as const
 							).map((stat) => (
 								<div
@@ -365,40 +364,6 @@ function InventoryVigilanteDossierPane({
 							))}
 						</div>
 
-						<div className="mt-6 rounded-xl border border-amber-900/30 bg-black/25 p-4">
-							<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
-								Traits
-							</div>
-							<div className="mt-3 flex flex-wrap gap-2">
-								{(sheet.traits ?? []).length > 0 ? (
-									sheet.traits?.map((trait) => (
-										<span
-											key={trait}
-											className="rounded-full border border-amber-900/30 bg-black/30 px-3 py-1 text-xs text-amber-100/80"
-										>
-											{trait}
-										</span>
-									))
-								) : (
-									<span className="text-sm text-amber-200/45">
-										No listed traits.
-									</span>
-								)}
-							</div>
-						</div>
-
-						{sheet.equipment && sheet.equipment.length > 0 ? (
-							<div className="mt-6 rounded-xl border border-amber-900/30 bg-black/25 p-4">
-								<div className="text-[11px] uppercase tracking-[0.24em] text-amber-400/70">
-									Equipment
-								</div>
-								<ul className="mt-3 space-y-2 text-sm text-amber-100/75">
-									{sheet.equipment.map((item) => (
-										<li key={item}>• {item}</li>
-									))}
-								</ul>
-							</div>
-						) : null}
 					</div>
 
 					<div className="shrink-0 border-t border-amber-900/30 px-5 py-4">
