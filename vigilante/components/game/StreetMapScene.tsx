@@ -25,7 +25,7 @@ import { MapContainer, Marker, Pane, TileLayer, useMap } from "react-leaflet";
 import * as L from "leaflet";
 import Inventory from "./Inventory";
 import PoliceSystem from "./police/policeSystem";
-import PoliceCaptureModal from "./police/PoliceCaptureModal";
+import PoliceCaptureModal from "./police/policeCaptureModal";
 import type { PoliceEtaItem, PoliceRenderItem } from "./police/policeTypes";
 import IncidentChanceRollOverlay from "./IncidentChanceRollOverlay";
 import IncidentDeployModal from "./IncidentDeployModal";
