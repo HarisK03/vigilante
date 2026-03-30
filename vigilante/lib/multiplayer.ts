@@ -257,6 +257,20 @@ export async function updateConsumedTheftSites(
     if (error) throw error;
 }
 
+export async function updateSessionReputation(
+    sessionId: number,
+    reputation: number,
+): Promise<void> {
+    const clamped = Math.max(0, Math.min(100, Math.floor(reputation)));
+
+    const { error } = await supabase()
+        .from("multiplayer_sessions")
+        .update({ reputation: clamped })
+        .eq("id", sessionId);
+
+    if (error) throw error;
+}
+
 // ── Pause sync ─────────────────────────────────────────────────────────────
 
 /**

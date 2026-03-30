@@ -26,6 +26,7 @@ export type MultiplayerSession = {
 	paused_by: string | null;
 	game_started_at: string | null;
 	consumed_theft_site_ids: string[];
+	reputation: number;
 };
 
 export type MultiplayerPlayer = {
