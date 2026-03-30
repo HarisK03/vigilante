@@ -193,9 +193,12 @@ import VettingMinigameModal from "@/components/game/VettingMinigameModal";
 import {
 	getSessionMarkers,
 	insertSessionMarker,
-	deleteSessionMarkerByMarkerId,
+	updateMarkerStatus,
 	subscribeToSessionMarkers,
+	subscribeToSession,
 	getSessionById,
+	updateSessionPausedBy,
+	updateConsumedTheftSites,
 } from "../../lib/multiplayer";
 import type {
 	AssignedResource,
@@ -315,6 +318,7 @@ type Props = {
 	};
 	mode?: "singleplayer" | "multiplayer";
 	sessionId?: number;
+	multiplayerStartedAt?: string | null;
 };
 
 type IncidentStatus = "active" | "resolving" | "resolved";
@@ -995,15 +999,15 @@ function makeCharacterIcon(initial: string, kind: CharacterKind) {
 			? { border: "#1d4ed8", bg: "rgba(30,64,175,0.78)", text: "#dbeafe" }
 			: kind === "vigilante"
 				? {
-						border: "#b45309",
-						bg: "rgba(120,53,15,0.82)",
-						text: "#fde68a",
-					}
+					border: "#b45309",
+					bg: "rgba(120,53,15,0.82)",
+					text: "#fde68a",
+				}
 				: {
-						border: "#4b5563",
-						bg: "rgba(55,65,81,0.8)",
-						text: "#f3f4f6",
-					};
+					border: "#4b5563",
+					bg: "rgba(55,65,81,0.8)",
+					text: "#f3f4f6",
+				};
 
 	const html = `<div style="
     width:44px;
@@ -1152,9 +1156,9 @@ function PoliceEtaBar({ etaMs }: { etaMs: number }) {
 // ── Map sub-components ────────────────────────────────────────────────────────
 
 function ZoomController({
-	level,
-	onBoundsReady,
-}: {
+							level,
+							onBoundsReady,
+						}: {
 	level: number;
 	onBoundsReady: (level: number, bounds: LatLngBounds) => void;
 }) {
@@ -1193,9 +1197,9 @@ function ZoomController({
 }
 
 function CharacterMarkerItem({
-	pin,
-	onSelect,
-}: {
+								 pin,
+								 onSelect,
+							 }: {
 	pin: CharacterPin;
 	onSelect: (pin: CharacterPin) => void;
 }) {
@@ -1244,9 +1248,9 @@ function CharacterMarkerItem({
 }
 
 function CharacterMarkers({
-	pins,
-	onSelect,
-}: {
+							  pins,
+							  onSelect,
+						  }: {
 	pins: CharacterPin[];
 	onSelect: (pin: CharacterPin) => void;
 }) {
@@ -1264,9 +1268,9 @@ function CharacterMarkers({
 }
 
 function RecruitMarkers({
-	leads,
-	onSelect,
-}: {
+							leads,
+							onSelect,
+						}: {
 	leads: RecruitLead[];
 	onSelect: (lead: RecruitLead) => void;
 }) {
@@ -1292,10 +1296,10 @@ function RecruitMarkers({
 }
 
 function TheftSiteMarkers({
-	//working as intended on master branch Thursday March 26 3:00AM EDT
-	sites,
-	onSelect,
-}: {
+							  //working as intended on master branch Thursday March 26 3:00AM EDT
+							  sites,
+							  onSelect,
+						  }: {
 	sites: TheftSite[];
 	onSelect: (site: TheftSite) => void;
 }) {
@@ -1319,10 +1323,10 @@ function TheftSiteMarkers({
 }
 
 function IncidentMarkers({
-	incidents,
-	selectedId,
-	onSelect,
-}: {
+							 incidents,
+							 selectedId,
+							 onSelect,
+						 }: {
 	incidents: Incident[];
 	selectedId: string | null;
 	onSelect: (id: string) => void;
@@ -1545,13 +1549,13 @@ function parseStoredIncident(raw: unknown): Incident | null {
 			: fallbackTypeLabel(category);
 	const deployedResourceIds = Array.isArray(o.deployedResourceIds)
 		? (o.deployedResourceIds as unknown[]).filter(
-				(x): x is string => typeof x === "string",
-			)
+			(x): x is string => typeof x === "string",
+		)
 		: undefined;
 	const deployedVigilanteIds = Array.isArray(o.deployedVigilanteIds)
 		? (o.deployedVigilanteIds as unknown[]).filter(
-				(x): x is string => typeof x === "string",
-			)
+			(x): x is string => typeof x === "string",
+		)
 		: undefined;
 	const resolution = parseIncidentResolution(o.resolution);
 	return {
@@ -1743,8 +1747,8 @@ function loadState(saveKey: string): GameState {
 				activeLeftTab === "incident" ? selectedFromSave : null,
 			incidents: Array.isArray(p.incidents)
 				? p.incidents
-						.map(parseStoredIncident)
-						.filter((x): x is Incident => x !== null)
+					.map(parseStoredIncident)
+					.filter((x): x is Incident => x !== null)
 				: [],
 			showIncidentPanel: activeLeftTab === "incident",
 			showMinigamePanel: activeLeftTab === "minigame",
@@ -1767,8 +1771,8 @@ function loadState(saveKey: string): GameState {
 				: [],
 			consumedTheftSiteIds: Array.isArray(p.consumedTheftSiteIds)
 				? (p.consumedTheftSiteIds as string[]).filter(
-						(id): id is string => typeof id === "string",
-					)
+					(id): id is string => typeof id === "string",
+				)
 				: [],
 			resourcePool: mergeResourcePool(p.resourcePool),
 			credits:
@@ -1786,14 +1790,14 @@ function loadState(saveKey: string): GameState {
 			purchasedBuffIds: mergePurchasedBuffIds(p.purchasedBuffIds),
 			unlockedAchievementIds: Array.isArray(p.unlockedAchievementIds)
 				? (
-						p.unlockedAchievementIds as
-							| string[]
-							| UnlockedAchievement[]
-					).map((a) =>
-						typeof a === "string"
-							? { achievementId: a, unlockedAt: Date.now() }
-							: a,
-					)
+					p.unlockedAchievementIds as
+						| string[]
+						| UnlockedAchievement[]
+				).map((a) =>
+					typeof a === "string"
+						? { achievementId: a, unlockedAt: Date.now() }
+						: a,
+				)
 				: [],
 			achievementProgress,
 			activeMinigame: null,
@@ -1812,12 +1816,13 @@ function saveState(saveKey: string, state: GameState) {
 }
 
 export default function StreetMapScene({
-	saveKey,
-	saveSlot,
-	cloudSync,
-	mode = "singleplayer",
-	sessionId,
-}: Props) {
+										   saveKey,
+										   saveSlot,
+										   cloudSync,
+										   mode = "singleplayer",
+										   sessionId,
+										   multiplayerStartedAt,
+									   }: Props) {
 	const [state, setState] = useState<GameState>(() =>
 		mode === "singleplayer" && saveKey
 			? loadState(saveKey)
@@ -1827,6 +1832,7 @@ export default function StreetMapScene({
 	stateRef.current = state;
 
 	const [isHost, setIsHost] = useState(false);
+	const [pausedByOther, setPausedByOther] = useState(false);
 
 	const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<
 		string | null
@@ -1885,7 +1891,7 @@ export default function StreetMapScene({
 	} | null>(null);
 
 	const isGameplayPausedByMinigame =
-		inventorySorterMode !== null || state.activeMinigame !== null;
+		inventorySorterMode !== null || state.activeMinigame !== null || pausedByOther;
 
 	// ── Pause tracking refs ───────────────────────────────────────────────────
 	// pauseStartedAtRef: wall-clock time when the current pause began.
@@ -1958,7 +1964,7 @@ export default function StreetMapScene({
 			const vigilante =
 				ownedVigilantes[
 					Math.floor(Math.random() * ownedVigilantes.length)
-				];
+					];
 			return {
 				type: "vigilante" as const,
 				profile: {
@@ -1978,7 +1984,7 @@ export default function StreetMapScene({
 			const officer =
 				NPC_DIALOGUE.police[
 					Math.floor(Math.random() * NPC_DIALOGUE.police.length)
-				];
+					];
 			return {
 				type: "police" as const,
 				profile: {
@@ -2290,34 +2296,78 @@ export default function StreetMapScene({
 				const rows = await getSessionMarkers(sessionId);
 				if (!active) return;
 
-				const incidents = rows.map(
-					(row): Incident => ({
+				const dbIncidents = rows.map((row): Incident => {
+					// Parse enriched JSON details (archetype, successChance, etc.)
+					let summary = row.details;
+					let archetype: IncidentArchetype = "fire_rescue";
+					let typeLabel = row.title;
+					let successChance = 75;
+
+					try {
+						const parsed = JSON.parse(row.details);
+						if (parsed && typeof parsed === "object") {
+							summary = parsed.summary ?? row.details;
+							archetype = parsed.archetype ?? "fire_rescue";
+							typeLabel = parsed.typeLabel ?? row.title;
+							successChance = parsed.successChance ?? 75;
+						}
+					} catch {
+						// details is plain text (legacy marker), use defaults
+					}
+
+					return {
 						id: row.marker_id,
-						category:
-							row.kind === "theft"
-								? "crime"
-								: row.kind === "hire"
-									? "medical"
-									: "fire_rescue",
-						typeLabel: row.title,
+						category: archetype,
+						typeLabel,
 						status: row.status === "active" ? "active" : "resolved",
 						lat: row.x,
 						lng: row.y,
 						title: row.title,
-						summary: normalizeIncidentDescription(row.details),
+						summary: normalizeIncidentDescription(summary),
 						createdAt: new Date(row.created_at).getTime(),
 						expiresAt: row.expires_at
 							? new Date(row.expires_at).getTime()
 							: Date.now() + 30000,
-						successChance: 75,
+						successChance,
 						assignedResources: row.assigned_resources ?? [],
-					}),
-				);
+					};
+				});
 
-				setState((prev) => ({
-					...prev,
-					incidents,
-				}));
+				setState((prev) => {
+					// Merge: keep local state for incidents we already have
+					// (preserves deployedResourceIds, resolution, etc.)
+					const localById = new Map(
+						prev.incidents.map((inc) => [inc.id, inc]),
+					);
+					const dbIds = new Set(dbIncidents.map((inc) => inc.id));
+
+					const merged: Incident[] = [];
+
+					for (const dbInc of dbIncidents) {
+						const local = localById.get(dbInc.id);
+						if (local) {
+							// Keep local gameplay state, but sync status from DB
+							merged.push({
+								...local,
+								status: dbInc.status === "resolved" ? "resolved" : local.status,
+								assignedResources: dbInc.assignedResources.length > 0
+									? dbInc.assignedResources
+									: local.assignedResources,
+							});
+						} else {
+							merged.push(dbInc);
+						}
+					}
+
+					// Keep locally-resolving incidents not yet in DB
+					for (const local of prev.incidents) {
+						if (!dbIds.has(local.id) && local.status === "resolving") {
+							merged.push(local);
+						}
+					}
+
+					return { ...prev, incidents: merged };
+				});
 			} catch (error) {
 				console.error("Failed to load multiplayer markers:", error);
 			}
@@ -2355,6 +2405,52 @@ export default function StreetMapScene({
 		};
 
 		void checkHost();
+	}, [mode, sessionId]);
+
+	// ── Multiplayer pause sync ──────────────────────────────────────────
+	useEffect(() => {
+		if (mode !== "multiplayer" || !sessionId) return;
+
+		let active = true;
+		const sb = getSupabaseBrowserClient();
+
+		const applySessionState = (session: Awaited<ReturnType<typeof getSessionById>>) => {
+			if (!session) return;
+
+			setState((prev) => ({
+				...prev,
+				consumedTheftSiteIds: session.consumed_theft_site_ids ?? [],
+			}));
+
+			sb.auth.getUser().then(({ data }) => {
+				const myId = data?.user?.id;
+				if (!myId) return;
+
+				setPausedByOther(!!session.paused_by && session.paused_by !== myId);
+			});
+		};
+
+		const loadSessionState = async () => {
+			try {
+				const session = await getSessionById(sessionId);
+				if (!active || !session) return;
+				applySessionState(session);
+			} catch (error) {
+				console.error("Failed to load multiplayer session state:", error);
+			}
+		};
+
+		void loadSessionState();
+
+		const unsubscribe = subscribeToSession(sessionId, (session) => {
+			if (!active) return;
+			applySessionState(session);
+		});
+
+		return () => {
+			active = false;
+			unsubscribe();
+		};
 	}, [mode, sessionId]);
 
 	useEffect(() => {
@@ -2485,10 +2581,10 @@ export default function StreetMapScene({
 						incident.status === "resolved"
 							? incident
 							: {
-									...incident,
-									createdAt: incident.createdAt + pausedMs,
-									expiresAt: incident.expiresAt + pausedMs,
-								},
+								...incident,
+								createdAt: incident.createdAt + pausedMs,
+								expiresAt: incident.expiresAt + pausedMs,
+							},
 					),
 					recruitLeads: s.recruitLeads.map((lead) => ({
 						...lead,
@@ -2612,7 +2708,7 @@ export default function StreetMapScene({
 
 	const expireIncident = async (id: string) => {
 		if (mode === "multiplayer" && sessionId) {
-			await deleteSessionMarkerByMarkerId(sessionId, id);
+			void updateMarkerStatus(sessionId, id, "failed");
 			return;
 		}
 		setState((s) => ({
@@ -2714,15 +2810,15 @@ export default function StreetMapScene({
 				pastIncidents: getPastIncidentsForAI(state.incidents, 10),
 				currentIncident: state.selectedIncidentId
 					? {
-							type:
-								state.incidents.find(
-									(i) => i.id === state.selectedIncidentId,
-								)?.category || "unknown",
-							description:
-								state.incidents.find(
-									(i) => i.id === state.selectedIncidentId,
-								)?.summary || "",
-						}
+						type:
+							state.incidents.find(
+								(i) => i.id === state.selectedIncidentId,
+							)?.category || "unknown",
+						description:
+							state.incidents.find(
+								(i) => i.id === state.selectedIncidentId,
+							)?.summary || "",
+					}
 					: undefined,
 				situation:
 					"Vigilante reporting to their handler or discussing the mission.",
@@ -2779,15 +2875,15 @@ export default function StreetMapScene({
 				pastIncidents: getPastIncidentsForAI(state.incidents, 10),
 				currentIncident: state.selectedIncidentId
 					? {
-							type:
-								state.incidents.find(
-									(i) => i.id === state.selectedIncidentId,
-								)?.category || "unknown",
-							description:
-								state.incidents.find(
-									(i) => i.id === state.selectedIncidentId,
-								)?.summary || "",
-						}
+						type:
+							state.incidents.find(
+								(i) => i.id === state.selectedIncidentId,
+							)?.category || "unknown",
+						description:
+							state.incidents.find(
+								(i) => i.id === state.selectedIncidentId,
+							)?.summary || "",
+					}
 					: undefined,
 				situation:
 					"Citizen reporting information or reacting to ongoing events in the neighborhood.",
@@ -2834,15 +2930,15 @@ export default function StreetMapScene({
 				pastIncidents: getPastIncidentsForAI(state.incidents, 10),
 				currentIncident: state.selectedIncidentId
 					? {
-							type:
-								state.incidents.find(
-									(i) => i.id === state.selectedIncidentId,
-								)?.category || "unknown",
-							description:
-								state.incidents.find(
-									(i) => i.id === state.selectedIncidentId,
-								)?.summary || "",
-						}
+						type:
+							state.incidents.find(
+								(i) => i.id === state.selectedIncidentId,
+							)?.category || "unknown",
+						description:
+							state.incidents.find(
+								(i) => i.id === state.selectedIncidentId,
+							)?.summary || "",
+					}
 					: undefined,
 				situation:
 					"Chief Williams discussing the state of the city and vigilante operations.",
@@ -2892,15 +2988,15 @@ export default function StreetMapScene({
 			pastIncidents: getPastIncidentsForAI(state.incidents, 10),
 			currentIncident: state.selectedIncidentId
 				? {
-						type:
-							state.incidents.find(
-								(i) => i.id === state.selectedIncidentId,
-							)?.category || "unknown",
-						description:
-							state.incidents.find(
-								(i) => i.id === state.selectedIncidentId,
-							)?.summary || "",
-					}
+					type:
+						state.incidents.find(
+							(i) => i.id === state.selectedIncidentId,
+						)?.category || "unknown",
+					description:
+						state.incidents.find(
+							(i) => i.id === state.selectedIncidentId,
+						)?.summary || "",
+				}
 				: undefined,
 			situation:
 				"Police officer discussing the incident or giving orders to vigilantes.",
@@ -2939,7 +3035,17 @@ export default function StreetMapScene({
 
 	const handleStartTheft = () => {
 		if (!selectedTheftSite) return;
+
 		setInventorySorterMode("resource-theft");
+
+		if (mode === "multiplayer" && sessionId) {
+			const sb = getSupabaseBrowserClient();
+			sb.auth.getUser().then(({ data }) => {
+				if (data?.user?.id) {
+					void updateSessionPausedBy(sessionId, data.user.id);
+				}
+			});
+		}
 	};
 
 	const handleTheftSuccess = (
@@ -2948,7 +3054,7 @@ export default function StreetMapScene({
 			credits: number;
 			items: Array<{ type: string; quantity: number }>;
 		},
-	) => {
+		) => {
 		const theftIncident = makeTheftIncident(site);
 
 		setState((s) => ({
@@ -2970,6 +3076,15 @@ export default function StreetMapScene({
 			reputation: Math.max(0, s.reputation - 25),
 		}));
 
+		if (mode === "multiplayer" && sessionId) {
+			const nextConsumed = stateRef.current.consumedTheftSiteIds.includes(site.id)
+				? stateRef.current.consumedTheftSiteIds
+				: [...stateRef.current.consumedTheftSiteIds, site.id];
+
+			void updateConsumedTheftSites(sessionId, nextConsumed);
+			void updateSessionPausedBy(sessionId, null);
+		}
+
 		// Trigger animation for reputation loss
 		triggerReputationLoss(25);
 
@@ -2981,7 +3096,12 @@ export default function StreetMapScene({
 				x: theftIncident.lat,
 				y: theftIncident.lng,
 				title: theftIncident.title,
-				details: theftIncident.summary,
+				details: JSON.stringify({
+					summary: theftIncident.summary,
+					archetype: theftIncident.category,
+					typeLabel: theftIncident.typeLabel,
+					successChance: theftIncident.successChance,
+				}),
 				createdAt: new Date(theftIncident.createdAt).toISOString(),
 				expiresAt: new Date(theftIncident.expiresAt).toISOString(),
 				status: "active",
@@ -3012,10 +3132,10 @@ export default function StreetMapScene({
 				careerStats: alreadyOwned
 					? s.careerStats
 					: {
-							...s.careerStats,
-							vigilantesRecruited:
-								s.careerStats.vigilantesRecruited + 1,
-						},
+						...s.careerStats,
+						vigilantesRecruited:
+							s.careerStats.vigilantesRecruited + 1,
+					},
 			};
 		});
 
@@ -3069,7 +3189,7 @@ export default function StreetMapScene({
 		},
 	) => {
 		if (mode === "multiplayer" && sessionId) {
-			void deleteSessionMarkerByMarkerId(sessionId, incidentId);
+			void updateMarkerStatus(sessionId, incidentId, "resolved");
 			return;
 		}
 
@@ -3107,33 +3227,33 @@ export default function StreetMapScene({
 				incidents: s.incidents.map((x) =>
 					x.id === incidentId
 						? {
-								...x,
-								status: "resolved" as const,
-								deployedResourceIds: [],
-								resolution: {
-									success: rollOutcome.success,
-									adjustedPercent:
-										rollOutcome.adjustedPercent,
-									beforeLuckPercent:
-										rollOutcome.beforeLuckPercent,
-									rolled: rollOutcome.rolled,
-									baseChancePercent:
-										rollOutcome.baseChancePercent,
-									resourceMultiplier:
-										rollOutcome.resourceMultiplier,
-									buffMultiplier: rollOutcome.buffMultiplier,
-									vigilanteMultiplier:
-										rollOutcome.vigilanteMultiplier,
-									avgArchetypeFit:
-										rollOutcome.avgArchetypeFit,
-									staffingSupportMultiplier:
-										rollOutcome.staffingSupportMultiplier,
-									gearPresenceMultiplier:
-										rollOutcome.gearPresenceMultiplier,
-									luckDeltaPercent:
-										rollOutcome.luckDeltaPercent,
-								},
-							}
+							...x,
+							status: "resolved" as const,
+							deployedResourceIds: [],
+							resolution: {
+								success: rollOutcome.success,
+								adjustedPercent:
+								rollOutcome.adjustedPercent,
+								beforeLuckPercent:
+								rollOutcome.beforeLuckPercent,
+								rolled: rollOutcome.rolled,
+								baseChancePercent:
+								rollOutcome.baseChancePercent,
+								resourceMultiplier:
+								rollOutcome.resourceMultiplier,
+								buffMultiplier: rollOutcome.buffMultiplier,
+								vigilanteMultiplier:
+								rollOutcome.vigilanteMultiplier,
+								avgArchetypeFit:
+								rollOutcome.avgArchetypeFit,
+								staffingSupportMultiplier:
+								rollOutcome.staffingSupportMultiplier,
+								gearPresenceMultiplier:
+								rollOutcome.gearPresenceMultiplier,
+								luckDeltaPercent:
+								rollOutcome.luckDeltaPercent,
+							},
+						}
 						: x,
 				),
 				reputation: Math.max(
@@ -3155,11 +3275,17 @@ export default function StreetMapScene({
 
 		if (type === "hack") {
 			setState((s) => ({ ...s, activeMinigame: null }));
+			if (mode === "multiplayer" && sessionId) {
+				void updateSessionPausedBy(sessionId, null);
+			}
 			return;
 		}
 
 		const inc = state.incidents.find((i) => i.id === incidentId);
 		setState((s) => ({ ...s, activeMinigame: null }));
+		if (mode === "multiplayer" && sessionId) {
+			void updateSessionPausedBy(sessionId, null);
+		}
 		if (!inc) return;
 
 		finishIncidentResolutionForId(incidentId, {
@@ -3184,11 +3310,17 @@ export default function StreetMapScene({
 
 		if (type === "hack") {
 			setState((s) => ({ ...s, activeMinigame: null }));
+			if (mode === "multiplayer" && sessionId) {
+				void updateSessionPausedBy(sessionId, null);
+			}
 			return;
 		}
 
 		const inc = state.incidents.find((i) => i.id === incidentId);
 		setState((s) => ({ ...s, activeMinigame: null }));
+		if (mode === "multiplayer" && sessionId) {
+			void updateSessionPausedBy(sessionId, null);
+		}
 		if (!inc) return;
 
 		finishIncidentResolutionForId(incidentId, {
@@ -3297,15 +3429,15 @@ export default function StreetMapScene({
 					incidents: s.incidents.map((x) =>
 						x.id === id
 							? {
-									...x,
-									status: "resolving" as const,
-									deployedResourceIds: [
-										...payload.resourceIds,
-									],
-									deployedVigilanteIds: [
-										...payload.vigilanteIds,
-									],
-								}
+								...x,
+								status: "resolving" as const,
+								deployedResourceIds: [
+									...payload.resourceIds,
+								],
+								deployedVigilanteIds: [
+									...payload.vigilanteIds,
+								],
+							}
 							: x,
 					),
 					activeMinigame: {
@@ -3315,6 +3447,12 @@ export default function StreetMapScene({
 					},
 				};
 			});
+			if (mode === "multiplayer" && sessionId) {
+				const sb = getSupabaseBrowserClient();
+				sb.auth.getUser().then(({ data }) => {
+					if (data?.user?.id) void updateSessionPausedBy(sessionId, data.user.id);
+				});
+			}
 			return;
 		}
 
@@ -3335,11 +3473,11 @@ export default function StreetMapScene({
 				resourceMultiplier: rollOutcome.resourceMultiplier,
 				buffMultiplier: rollOutcome.buffMultiplier,
 				incidentSpecificMultiplier:
-					rollOutcome.incidentSpecificMultiplier,
+				rollOutcome.incidentSpecificMultiplier,
 				vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
 				avgArchetypeFit: rollOutcome.avgArchetypeFit,
 				staffingSupportMultiplier:
-					rollOutcome.staffingSupportMultiplier,
+				rollOutcome.staffingSupportMultiplier,
 				gearPresenceMultiplier: rollOutcome.gearPresenceMultiplier,
 				luckDeltaPercent: rollOutcome.luckDeltaPercent,
 			},
@@ -3355,11 +3493,11 @@ export default function StreetMapScene({
 				incidents: s.incidents.map((x) =>
 					x.id === id
 						? {
-								...x,
-								status: "resolving" as const,
-								deployedResourceIds: [...payload.resourceIds],
-								deployedVigilanteIds: [...payload.vigilanteIds],
-							}
+							...x,
+							status: "resolving" as const,
+							deployedResourceIds: [...payload.resourceIds],
+							deployedVigilanteIds: [...payload.vigilanteIds],
+						}
 						: x,
 				),
 			};
@@ -3373,7 +3511,22 @@ export default function StreetMapScene({
 			pausedResolveRemainingMsRef.current = null;
 
 			if (mode === "multiplayer" && sessionId) {
-				void deleteSessionMarkerByMarkerId(sessionId, id);
+				void updateMarkerStatus(sessionId, id, "resolved");
+
+				setChanceRollOverlay((prev) =>
+					prev && prev.incidentId === id
+						? { ...prev, phase: "outcome" }
+						: prev,
+				);
+
+				if (
+					inc.category === "disaster" &&
+					rollOutcome.success &&
+					Math.random() <= 1
+				) {
+					setPendingHackMinigame({ incidentId: id });
+				}
+
 				return;
 			}
 
@@ -3425,36 +3578,36 @@ export default function StreetMapScene({
 					incidents: s.incidents.map((x) =>
 						x.id === id
 							? {
-									...x,
-									status: "resolved" as const,
-									deployedResourceIds: [],
-									resolution: {
-										success: rollOutcome.success,
-										adjustedPercent:
-											rollOutcome.adjustedPercent,
-										beforeLuckPercent:
-											rollOutcome.beforeLuckPercent,
-										rolled: rollOutcome.rolled,
-										baseChancePercent:
-											rollOutcome.baseChancePercent,
-										resourceMultiplier:
-											rollOutcome.resourceMultiplier,
-										buffMultiplier:
-											rollOutcome.buffMultiplier,
-										incidentSpecificMultiplier:
-											rollOutcome.incidentSpecificMultiplier,
-										vigilanteMultiplier:
-											rollOutcome.vigilanteMultiplier,
-										avgArchetypeFit:
-											rollOutcome.avgArchetypeFit,
-										staffingSupportMultiplier:
-											rollOutcome.staffingSupportMultiplier,
-										gearPresenceMultiplier:
-											rollOutcome.gearPresenceMultiplier,
-										luckDeltaPercent:
-											rollOutcome.luckDeltaPercent,
-									},
-								}
+								...x,
+								status: "resolved" as const,
+								deployedResourceIds: [],
+								resolution: {
+									success: rollOutcome.success,
+									adjustedPercent:
+									rollOutcome.adjustedPercent,
+									beforeLuckPercent:
+									rollOutcome.beforeLuckPercent,
+									rolled: rollOutcome.rolled,
+									baseChancePercent:
+									rollOutcome.baseChancePercent,
+									resourceMultiplier:
+									rollOutcome.resourceMultiplier,
+									buffMultiplier:
+									rollOutcome.buffMultiplier,
+									incidentSpecificMultiplier:
+									rollOutcome.incidentSpecificMultiplier,
+									vigilanteMultiplier:
+									rollOutcome.vigilanteMultiplier,
+									avgArchetypeFit:
+									rollOutcome.avgArchetypeFit,
+									staffingSupportMultiplier:
+									rollOutcome.staffingSupportMultiplier,
+									gearPresenceMultiplier:
+									rollOutcome.gearPresenceMultiplier,
+									luckDeltaPercent:
+									rollOutcome.luckDeltaPercent,
+								},
+							}
 							: x,
 					),
 					reputation: Math.max(
@@ -3569,7 +3722,12 @@ export default function StreetMapScene({
 							x: newIncident.lat,
 							y: newIncident.lng,
 							title: newIncident.title,
-							details: newIncident.summary,
+							details: JSON.stringify({
+								summary: newIncident.summary,
+								archetype: newIncident.category,
+								typeLabel: newIncident.typeLabel,
+								successChance: newIncident.successChance,
+							}),
 							createdAt: new Date(
 								newIncident.createdAt,
 							).toISOString(),
@@ -3578,7 +3736,10 @@ export default function StreetMapScene({
 							).toISOString(),
 							status: "active",
 						});
-						return s;
+						return {
+							...s,
+							incidents: [...s.incidents, newIncident],
+						};
 					}
 
 					// Track incident spawn for quick response achievement
@@ -3667,10 +3828,10 @@ export default function StreetMapScene({
 							Math.random() < 0.45
 								? randomFrom(undercoverAvailable)
 								: randomFrom(
-										normalAvailable.length > 0
-											? normalAvailable
-											: available,
-									);
+									normalAvailable.length > 0
+										? normalAvailable
+										: available,
+								);
 					} else {
 						chosen = randomFrom(
 							normalAvailable.length > 0
@@ -3730,7 +3891,7 @@ export default function StreetMapScene({
 					.map((i) => i.id);
 
 				expiredIds.forEach((incidentId) => {
-					void deleteSessionMarkerByMarkerId(sessionId, incidentId);
+					void updateMarkerStatus(sessionId, incidentId, "failed");
 				});
 
 				if (
@@ -3789,11 +3950,11 @@ export default function StreetMapScene({
 					careerStats:
 						expiredIncidentIds.size > 0
 							? {
-									...prev.careerStats,
-									incidentsExpired:
-										prev.careerStats.incidentsExpired +
-										expiredIncidentIds.size,
-								}
+								...prev.careerStats,
+								incidentsExpired:
+									prev.careerStats.incidentsExpired +
+									expiredIncidentIds.size,
+							}
 							: prev.careerStats,
 					// Reputation penalty for expiration handled in expireIncident, but this bypasses that.
 					// We'll add reputation penalty here for consistency.
@@ -3910,8 +4071,8 @@ export default function StreetMapScene({
 		() =>
 			selectedRecruitLead
 				? (vigilantes.find(
-						(v) => v.id === selectedRecruitLead.vigilanteId,
-					) ?? null)
+					(v) => v.id === selectedRecruitLead.vigilanteId,
+				) ?? null)
 				: null,
 		[selectedRecruitLead],
 	);
@@ -4139,6 +4300,13 @@ export default function StreetMapScene({
 					timerSlowdownMultiplier={getPoliceSlowdownMultiplier(
 						state.purchasedUpgradeIds,
 					)}
+					mode={mode}
+					sessionId={sessionId}
+					sharedStartTimeMs={
+						mode === "multiplayer" && multiplayerStartedAt
+							? new Date(multiplayerStartedAt).getTime()
+							: null
+					}
 				/>
 				<CharacterMarkers
 					pins={visibleDynamicPins}
@@ -4223,9 +4391,9 @@ export default function StreetMapScene({
 														isGameplayPausedByMinigame
 															? () => {}
 															: () =>
-																	expireRecruitLead(
-																		selectedRecruitLead.id,
-																	)
+																expireRecruitLead(
+																	selectedRecruitLead.id,
+																)
 													}
 													paused={
 														isGameplayPausedByMinigame
@@ -4347,10 +4515,10 @@ export default function StreetMapScene({
 										{dialogue.dialogueType === "past"
 											? "reminiscing"
 											: dialogue.dialogueType ===
-												  "current"
+											"current"
 												? "responding"
 												: dialogue.dialogueType ===
-													  "story"
+												"story"
 													? "story"
 													: ""}
 									</div>
@@ -4630,7 +4798,7 @@ export default function StreetMapScene({
 															"resolved"
 																? "border-amber-800/50 bg-amber-950/35 text-amber-200/70"
 																: inc.status ===
-																	  "resolving"
+																"resolving"
 																	? "border-amber-700/60 bg-amber-950/40 text-amber-200"
 																	: "border-red-900 bg-red-900/30 text-red-300"
 														}`}
@@ -4638,7 +4806,7 @@ export default function StreetMapScene({
 														{inc.status === "active"
 															? "!"
 															: inc.status ===
-																  "resolving"
+															"resolving"
 																? "…"
 																: "·"}
 													</div>
@@ -4666,9 +4834,9 @@ export default function StreetMapScene({
 														isGameplayPausedByMinigame
 															? () => {}
 															: () =>
-																	expireIncident(
-																		inc.id,
-																	)
+																expireIncident(
+																	inc.id,
+																)
 													}
 													paused={
 														isGameplayPausedByMinigame
@@ -4840,6 +5008,12 @@ export default function StreetMapScene({
 									difficulty: 0,
 								},
 							}));
+							if (mode === "multiplayer" && sessionId) {
+								const sb = getSupabaseBrowserClient();
+								sb.auth.getUser().then(({ data }) => {
+									if (data?.user?.id) void updateSessionPausedBy(sessionId, data.user.id);
+								});
+							}
 						}
 					}}
 				/>
@@ -4873,15 +5047,15 @@ export default function StreetMapScene({
 				incident={
 					selectedIncident && selectedIncident.status === "active"
 						? {
-								id: selectedIncident.id,
-								category: selectedIncident.category,
-								typeLabel: selectedIncident.typeLabel,
-								title: selectedIncident.title,
-								summary: selectedIncident.summary,
-								createdAt: selectedIncident.createdAt,
-								expiresAt: selectedIncident.expiresAt,
-								successChance: selectedIncident.successChance,
-							}
+							id: selectedIncident.id,
+							category: selectedIncident.category,
+							typeLabel: selectedIncident.typeLabel,
+							title: selectedIncident.title,
+							summary: selectedIncident.summary,
+							createdAt: selectedIncident.createdAt,
+							expiresAt: selectedIncident.expiresAt,
+							successChance: selectedIncident.successChance,
+						}
 						: null
 				}
 				ownedVigilanteIds={state.ownedVigilanteIds}
@@ -4892,10 +5066,10 @@ export default function StreetMapScene({
 					isGameplayPausedByMinigame
 						? () => {}
 						: () => {
-								if (selectedIncident?.status === "active")
-									expireIncident(selectedIncident.id);
-								setDeployModalOpen(false);
-							}
+							if (selectedIncident?.status === "active")
+								expireIncident(selectedIncident.id);
+							setDeployModalOpen(false);
+						}
 				}
 				onConfirm={handleDeployConfirm}
 				purchasedUpgradeIds={state.purchasedUpgradeIds}
@@ -4903,7 +5077,13 @@ export default function StreetMapScene({
 
 			<InventorySorterModal
 				open={inventorySorterMode !== null}
-				onClose={() => setInventorySorterMode(null)}
+				onClose={() => {
+					setInventorySorterMode(null);
+
+					if (mode === "multiplayer" && sessionId) {
+						void updateSessionPausedBy(sessionId, null);
+					}
+				}}
 				onWin={(reward) => {
 					if (
 						inventorySorterMode === "resource-theft" &&
@@ -4912,7 +5092,12 @@ export default function StreetMapScene({
 						handleTheftSuccess(selectedTheftSite, reward);
 						return;
 					}
+
 					setInventorySorterMode(null);
+
+					if (mode === "multiplayer" && sessionId) {
+						void updateSessionPausedBy(sessionId, null);
+					}
 				}}
 				title={
 					inventorySorterMode === "resource-theft"
@@ -5026,6 +5211,17 @@ export default function StreetMapScene({
 					onDismiss={achievements.dismissNotification}
 				/>
 			</div>
+
+			{/* Multiplayer pause overlay */}
+			{pausedByOther && (
+				<div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+					<div className="rounded-2xl border border-amber-900/40 bg-black/60 px-8 py-6 text-center shadow-2xl">
+						<div className="w-6 h-6 mx-auto rounded-full border-2 border-amber-700/40 border-t-amber-300/80 animate-spin" aria-hidden />
+						<p className="mt-4 text-lg font-semibold text-amber-100">Game Paused</p>
+						<p className="mt-2 text-sm text-amber-200/60">The other player is in a minigame. Waiting for them to finish…</p>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
