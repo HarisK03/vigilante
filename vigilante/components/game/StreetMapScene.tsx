@@ -49,7 +49,6 @@ import {
 	type CareerStats,
 } from "@/lib/careerStats";
 import type { GameState, Incident, IncidentResolution, IncidentStatus, RecruitLead } from "@/lib/gameTypes";
-// import { mergeResourcePool } from
 import { markCloudFlush, upsertGameSave } from "@/lib/cloudSaves";
 import { readSave, touchSave, type SaveSlotId } from "@/lib/saves";
 import { DEFAULT_ACHIEVEMENT_PROGRESS } from "@/lib/achievements";
@@ -1544,6 +1543,27 @@ function pruneExpiredInjuries(
 		if (typeof until === "number" && until > now) next[id] = until;
 	}
 	return next;
+}
+
+function mergeResourcePool(
+	partial: unknown,
+): Record<string, ResourcePoolEntry> {
+	const merged: Record<string, ResourcePoolEntry> = {
+		...DEFAULT_RESOURCE_POOL,
+	};
+	if (!partial || typeof partial !== "object") return merged;
+	for (const [k, v] of Object.entries(partial)) {
+		if (!v || typeof v !== "object") continue;
+		const e = v as Record<string, unknown>;
+		if (typeof e.qty !== "number" || typeof e.deployed !== "number")
+			continue;
+		const qty = Math.max(0, e.qty);
+		merged[k] = {
+			qty,
+			deployed: Math.max(0, Math.min(e.deployed, qty)),
+		};
+	}
+	return merged;
 }
 
 function isOngoingIncident(i: Incident): boolean {
