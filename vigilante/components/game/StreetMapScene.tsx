@@ -210,6 +210,7 @@ import {
 	getSessionById,
 	updateSessionPausedBy,
 	updateConsumedTheftSites,
+	updateSessionReputation,
 } from "../../lib/multiplayer";
 import type {
 	AssignedResource,
@@ -1831,6 +1832,33 @@ export default function StreetMapScene({
 		}, 3000);
 	}, []);
 
+	const applyReputationDelta = useCallback(
+		(delta: number) => {
+			if (delta === 0) return;
+
+			setState((s) => {
+				const nextReputation = Math.max(
+					0,
+					Math.min(100, s.reputation + delta),
+				);
+
+				if (mode === "multiplayer" && sessionId) {
+					void updateSessionReputation(sessionId, nextReputation);
+				}
+
+				return {
+					...s,
+					reputation: nextReputation,
+				};
+			});
+
+			if (delta < 0) {
+				triggerReputationLoss(Math.abs(delta));
+			}
+		},
+		[mode, sessionId, isHost, triggerReputationLoss],
+	);
+
 	// Check game over conditions
 	const checkGameOver = useCallback((currentState: GameState) => {
 		if (hasTriggeredGameOverRef.current) return;
@@ -2487,19 +2515,27 @@ export default function StreetMapScene({
 		let active = true;
 		const sb = getSupabaseBrowserClient();
 
-		const applySessionState = (session: Awaited<ReturnType<typeof getSessionById>>) => {
+		const applySessionState = (
+			session: Awaited<ReturnType<typeof getSessionById>>,
+		) => {
 			if (!session) return;
 
 			setState((prev) => ({
 				...prev,
 				consumedTheftSiteIds: session.consumed_theft_site_ids ?? [],
+				reputation:
+					typeof session.reputation === "number"
+						? Math.max(0, Math.min(100, session.reputation))
+						: prev.reputation,
 			}));
 
 			sb.auth.getUser().then(({ data }) => {
 				const myId = data?.user?.id;
 				if (!myId) return;
 
-				setPausedByOther(!!session.paused_by && session.paused_by !== myId);
+				setPausedByOther(
+					!!session.paused_by && session.paused_by !== myId,
+				);
 			});
 		};
 
@@ -2782,6 +2818,7 @@ export default function StreetMapScene({
 	const expireIncident = async (id: string) => {
 		if (mode === "multiplayer" && sessionId) {
 			void updateMarkerStatus(sessionId, id, "failed");
+			applyReputationDelta(-25);
 			return;
 		}
 		setState((s) => ({
@@ -2793,12 +2830,10 @@ export default function StreetMapScene({
 			selectedIncidentId:
 				s.selectedIncidentId === id ? null : s.selectedIncidentId,
 			incidents: s.incidents.filter((i) => i.id !== id),
-			// Reputation penalty for letting an incident expire
-			reputation: Math.max(0, s.reputation - 25),
 		}));
 
 		// Trigger animation for reputation loss
-		triggerReputationLoss(25);
+		applyReputationDelta(-25);
 	};
 
 	const handleIncidentSelect = (id: string) => {
@@ -3145,8 +3180,6 @@ export default function StreetMapScene({
 			showIncidentPanel: true,
 			showMinigamePanel: false,
 			showPolicePanel: false,
-			// Reputation penalty for theft
-			reputation: Math.max(0, s.reputation - 25),
 		}));
 
 		if (mode === "multiplayer" && sessionId) {
@@ -3159,7 +3192,7 @@ export default function StreetMapScene({
 		}
 
 		// Trigger animation for reputation loss
-		triggerReputationLoss(25);
+		applyReputationDelta(-25);
 
 		if (mode === "multiplayer" && sessionId) {
 			void insertSessionMarker({
@@ -3264,6 +3297,9 @@ export default function StreetMapScene({
 	) => {
 		if (mode === "multiplayer" && sessionId) {
 			void updateMarkerStatus(sessionId, incidentId, "resolved");
+			if (!rollOutcome.success) {
+				applyReputationDelta(-33);
+			}
 			return;
 		}
 
@@ -3331,16 +3367,12 @@ export default function StreetMapScene({
 							}
 						: x,
 				),
-				reputation: Math.max(
-					0,
-					Math.min(100, s.reputation + reputationDelta),
-				),
 			};
 		});
 
 		// Trigger animation for reputation loss
 		if (!rollOutcome.success) {
-			triggerReputationLoss(33);
+			applyReputationDelta(-33);
 		}
 	};
 
@@ -3590,6 +3622,10 @@ export default function StreetMapScene({
 			if (mode === "multiplayer" && sessionId) {
 				void updateMarkerStatus(sessionId, id, "resolved");
 
+				if (!rollOutcome.success) {
+					applyReputationDelta(-33);
+				}
+
 				setChanceRollOverlay((prev) =>
 					prev && prev.incidentId === id
 						? { ...prev, phase: "outcome" }
@@ -3687,16 +3723,12 @@ export default function StreetMapScene({
 								}
 							: x,
 					),
-					reputation: Math.max(
-						0,
-						Math.min(100, s.reputation + reputationDelta),
-					),
 				};
 			});
 
 			// Trigger animation for reputation loss
 			if (!rollOutcome.success) {
-				triggerReputationLoss(33);
+				applyReputationDelta(-33);
 			}
 
 			setChanceRollOverlay((prev) =>
@@ -3971,6 +4003,10 @@ export default function StreetMapScene({
 					void updateMarkerStatus(sessionId, incidentId, "failed");
 				});
 
+				if (expiredIds.length > 0) {
+					applyReputationDelta(-(expiredIds.length * 25));
+				}
+
 				if (
 					selectedRecruitLeadId &&
 					!s.recruitLeads.some((r) => r.id === selectedRecruitLeadId)
@@ -4008,7 +4044,7 @@ export default function StreetMapScene({
 
 				// Trigger animation for reputation loss from expired incidents
 				if (expiredIncidentIds.size > 0) {
-					triggerReputationLoss(expiredIncidentIds.size * 25);
+					applyReputationDelta(-(expiredIncidentIds.size * 25));
 				}
 
 				return {
@@ -4035,10 +4071,6 @@ export default function StreetMapScene({
 							: prev.careerStats,
 					// Reputation penalty for expiration handled in expireIncident, but this bypasses that.
 					// We'll add reputation penalty here for consistency.
-					reputation: Math.max(
-						0,
-						prev.reputation - expiredIncidentIds.size * 25,
-					),
 				};
 			});
 
