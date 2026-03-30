@@ -199,6 +199,7 @@ export type GameState = {
 	showIncidentPanel: boolean;
 	showMinigamePanel: boolean;
 	showPolicePanel: boolean;
+	showOptionsPanel: boolean;
 	showInventoryPanel: boolean;
 	inventoryTab: "vigilantes" | "resources" | "buffs";
 	ownedVigilanteIds: string[];

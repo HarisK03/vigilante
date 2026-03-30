@@ -31,6 +31,7 @@ import IncidentChanceRollOverlay from "./IncidentChanceRollOverlay";
 import IncidentDeployModal from "./IncidentDeployModal";
 import GameOverOverlay from "./GameOverOverlay";
 import { IncidentTimerBar } from "./IncidentTimerBar";
+import VolumeSlider from "../menu/VolumeSlider";
 import { vigilantes } from "@/app/components/data/vigilante";
 import { useSfx } from "@/lib/sfx";
 import {
@@ -48,7 +49,14 @@ import {
 	saveState,
 	restartRun as restartRunGame,
 } from "@/lib/gameStateUtils";
-import type { GameState, CareerStats, Incident, IncidentResolution, IncidentStatus, RecruitLead } from "@/lib/gameTypes";
+import type {
+	GameState,
+	CareerStats,
+	Incident,
+	IncidentResolution,
+	IncidentStatus,
+	RecruitLead,
+} from "@/lib/gameTypes";
 import { markCloudFlush, upsertGameSave } from "@/lib/cloudSaves";
 import { readSave, touchSave, type SaveSlotId } from "@/lib/saves";
 import { DEFAULT_ACHIEVEMENT_PROGRESS } from "@/lib/achievements";
@@ -104,7 +112,10 @@ async function callAISuccessCalc(params: {
 function calculateFallbackSuccessPercent(
 	baseChancePercent: number,
 	archetype: string,
-	vigilantes: Array<{ id: string; stats: { strength: number; intelligence: number; speed: number } }>,
+	vigilantes: Array<{
+		id: string;
+		stats: { strength: number; intelligence: number; speed: number };
+	}>,
 	resourceIds: string[],
 	buffIds: string[],
 ): number {
@@ -1454,13 +1465,24 @@ function parseIncidentResolution(raw: unknown): IncidentResolution | null {
 		adjustedPercent: o.adjustedPercent,
 		beforeLuckPercent: o.beforeLuckPercent,
 		rolled: o.rolled,
-		baseChancePercent: typeof o.baseChancePercent === "number" ? o.baseChancePercent : 50,
-		resourceMultiplier: typeof o.resourceMultiplier === "number" ? o.resourceMultiplier : 1,
-		buffMultiplier: typeof o.buffMultiplier === "number" ? o.buffMultiplier : 1,
-		incidentSpecificMultiplier: typeof o.incidentSpecificMultiplier === "number" ? o.incidentSpecificMultiplier : 1,
-		vigilanteMultiplier: typeof o.vigilanteMultiplier === "number" ? o.vigilanteMultiplier : 1,
-		avgArchetypeFit: typeof o.avgArchetypeFit === "number" ? o.avgArchetypeFit : 0,
-		luckDeltaPercent: typeof o.luckDeltaPercent === "number" ? o.luckDeltaPercent : 0,
+		baseChancePercent:
+			typeof o.baseChancePercent === "number" ? o.baseChancePercent : 50,
+		resourceMultiplier:
+			typeof o.resourceMultiplier === "number" ? o.resourceMultiplier : 1,
+		buffMultiplier:
+			typeof o.buffMultiplier === "number" ? o.buffMultiplier : 1,
+		incidentSpecificMultiplier:
+			typeof o.incidentSpecificMultiplier === "number"
+				? o.incidentSpecificMultiplier
+				: 1,
+		vigilanteMultiplier:
+			typeof o.vigilanteMultiplier === "number"
+				? o.vigilanteMultiplier
+				: 1,
+		avgArchetypeFit:
+			typeof o.avgArchetypeFit === "number" ? o.avgArchetypeFit : 0,
+		luckDeltaPercent:
+			typeof o.luckDeltaPercent === "number" ? o.luckDeltaPercent : 0,
 	};
 
 	// Override with any additional optional fields
@@ -1468,8 +1490,7 @@ function parseIncidentResolution(raw: unknown): IncidentResolution | null {
 		base.staffingSupportMultiplier = o.staffingSupportMultiplier;
 	if (typeof o.gearPresenceMultiplier === "number")
 		base.gearPresenceMultiplier = o.gearPresenceMultiplier;
-	if (typeof o.aiReasoning === "string")
-		base.aiReasoning = o.aiReasoning;
+	if (typeof o.aiReasoning === "string") base.aiReasoning = o.aiReasoning;
 	return base;
 }
 
@@ -1796,7 +1817,8 @@ export default function StreetMapScene({
 				...s,
 				careerStats: {
 					...s.careerStats,
-					totalPlaytimeMs: (s.careerStats.totalPlaytimeMs ?? 0) + 1000,
+					totalPlaytimeMs:
+						(s.careerStats.totalPlaytimeMs ?? 0) + 1000,
 				},
 			}));
 		}, 1000);
@@ -1890,20 +1912,9 @@ export default function StreetMapScene({
 			id: `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`,
 		};
 
-		// If inventory is visible, close it first then show dialogue
-		if (state.showInventoryPanel) {
-			inventoryWasOpenRef.current = true;
-			pendingDialogueRef.current = dialogueWithId; // ← store with id
-			await waitForInventoryClose();
-			if (pendingDialogueRef.current) {
-				dialogueOpenRef.current = true;
-				setDialogue(pendingDialogueRef.current);
-				pendingDialogueRef.current = null;
-			}
-		} else {
-			dialogueOpenRef.current = true;
-			setDialogue(dialogueWithId);
-		}
+		// Show dialogue immediately - don't close inventory
+		dialogueOpenRef.current = true;
+		setDialogue(dialogueWithId);
 	};
 
 	const handlePoliceResolveIncident = useCallback((incidentId: string) => {
@@ -1942,12 +1953,13 @@ export default function StreetMapScene({
 	}, []);
 
 	const toggleExclusiveLeftPanel = useCallback(
-		(panel: "incident" | "minigame" | "police") => {
+		(panel: "incident" | "minigame" | "police" | "options") => {
 			setState((s) => {
 				const isSamePanelOpen =
 					(panel === "incident" && s.showIncidentPanel) ||
 					(panel === "minigame" && s.showMinigamePanel) ||
-					(panel === "police" && s.showPolicePanel);
+					(panel === "police" && s.showPolicePanel) ||
+					(panel === "options" && s.showOptionsPanel);
 
 				if (isSamePanelOpen) {
 					return {
@@ -1955,6 +1967,7 @@ export default function StreetMapScene({
 						showIncidentPanel: false,
 						showMinigamePanel: false,
 						showPolicePanel: false,
+						showOptionsPanel: false,
 						selectedIncidentId:
 							panel === "incident" ? null : s.selectedIncidentId,
 					};
@@ -1965,6 +1978,7 @@ export default function StreetMapScene({
 					showIncidentPanel: panel === "incident",
 					showMinigamePanel: panel === "minigame",
 					showPolicePanel: panel === "police",
+					showOptionsPanel: panel === "options",
 					selectedIncidentId:
 						panel === "incident" ? s.selectedIncidentId : null,
 				};
@@ -1973,34 +1987,10 @@ export default function StreetMapScene({
 		[],
 	);
 
-	// Dialogue-Inventory Interaction: auto-close inventory when dialogue opens,
-	// and restore it when dialogue closes only if it was open before.
-	// Note: `inventoryWasOpenRef` is set by `openDialogue` before dialogue appears.
-	useEffect(() => {
-		if (dialogue) {
-			// Dialogue opened: close inventory if it's still open
-			if (state.showInventoryPanel) {
-				setState((s) => ({
-					...s,
-					showInventoryPanel: false,
-				}));
-			}
-		} else {
-			// Dialogue closed: restore inventory only if it was previously open
-			if (inventoryWasOpenRef.current) {
-				setState((s) => ({
-					...s,
-					showInventoryPanel: true,
-				}));
-			}
-			// Reset the ref for next time
-			inventoryWasOpenRef.current = false;
-			// Also reset dialogue open flag when dialogue closes
-			dialogueOpenRef.current = false;
-		}
-		// Only run when dialogue opens/closes; intentionally depend on `dialogue`
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [dialogue]);
+	// Dialogue-Inventory Interaction: inventory can stay open while dialogue shows
+	// (no auto-close behavior)
+	// Removed: auto-close inventory when dialogue opens
+	// Note: inventoryWasOpenRef and dialogueOpenRef kept for potential future use
 
 	// TTS: speak dialogue text when it changes, but only once per unique text
 	useEffect(() => {
@@ -2014,17 +2004,25 @@ export default function StreetMapScene({
 					.then(() => {
 						// Only close if the dialogue that finished is still the active one
 						if (currentDialogueIdRef.current === dialogue.id) {
+							dialogueOpenRef.current = false;
 							setDialogue(null);
 						}
 					})
 					.catch((err) => {
 						console.warn("[TTS] failed to speak dialogue:", err);
+						// Even on TTS failure, close the dialogue and clear the blocking flag
+						if (currentDialogueIdRef.current === dialogue.id) {
+							dialogueOpenRef.current = false;
+							setDialogue(null);
+						}
 					});
 			}
 		} else {
 			tts.stop();
 			lastSpokenTextRef.current = null;
-			currentDialogueIdRef.current = null; // ← clear ref when no dialogue
+			currentDialogueIdRef.current = null;
+			// Reset the blocking flag when dialogue is not active
+			dialogueOpenRef.current = false;
 		}
 	}, [dialogue, tts]);
 
@@ -2496,7 +2494,6 @@ export default function StreetMapScene({
 	const handleIncidentSelect = (id: string) => {
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
-		setDialogue(null);
 		setShowVettingModal(false);
 		setSelectedTheftSiteId(null);
 		setState((s) => {
@@ -2515,6 +2512,7 @@ export default function StreetMapScene({
 				showIncidentPanel: true,
 				showMinigamePanel: false,
 				showPolicePanel: false,
+				showOptionsPanel: false,
 			};
 		});
 	};
@@ -2523,7 +2521,6 @@ export default function StreetMapScene({
 	const handleIncidentPanelRowClick = (id: string) => {
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
-		setDialogue(null);
 		setShowVettingModal(false);
 		setSelectedTheftSiteId(null);
 		setState((s) => ({
@@ -2532,31 +2529,48 @@ export default function StreetMapScene({
 			showIncidentPanel: true,
 			showMinigamePanel: false,
 			showPolicePanel: false,
+			showOptionsPanel: false,
 		}));
 	};
 
 	const handleRecruitSelect = (lead: RecruitLead) => {
-		setDialogue(null);
 		setShowVettingModal(false);
 		setSelectedTheftSiteId(null);
-		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setState((s) => ({
+			...s,
+			selectedIncidentId: null,
+			showIncidentPanel: false,
+			showPolicePanel: false,
+			showOptionsPanel: false,
+		}));
 		setOverlayMode("recruit");
 		setSelectedOwnedVigilanteId(null);
 		setSelectedRecruitLeadId(lead.id);
 	};
 
 	const handleOwnedVigilanteSelect = (vigilanteId: string) => {
-		setDialogue(null);
 		setShowVettingModal(false);
 		setSelectedTheftSiteId(null);
-		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setState((s) => ({
+			...s,
+			selectedIncidentId: null,
+			showIncidentPanel: false,
+			showPolicePanel: false,
+			showOptionsPanel: false,
+		}));
 		setOverlayMode("owned");
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(vigilanteId);
 	};
 
 	const handleCharacterSelect = (pin: CharacterPin) => {
-		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setState((s) => ({
+			...s,
+			selectedIncidentId: null,
+			showIncidentPanel: false,
+			showPolicePanel: false,
+			showOptionsPanel: false,
+		}));
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
 		setShowVettingModal(false);
@@ -2790,11 +2804,16 @@ export default function StreetMapScene({
 	};
 
 	const handleTheftSiteSelect = (site: TheftSite) => {
-		setDialogue(null);
 		setSelectedRecruitLeadId(null);
 		setSelectedOwnedVigilanteId(null);
 		setShowVettingModal(false);
-		setState((s) => ({ ...s, selectedIncidentId: null }));
+		setState((s) => ({
+			...s,
+			selectedIncidentId: null,
+			showIncidentPanel: false,
+			showPolicePanel: false,
+			showOptionsPanel: false,
+		}));
 		setSelectedTheftSiteId(site.id);
 	};
 
@@ -2827,6 +2846,7 @@ export default function StreetMapScene({
 			showIncidentPanel: true,
 			showMinigamePanel: false,
 			showPolicePanel: false,
+			showOptionsPanel: false,
 			// Reputation penalty for theft
 			reputation: Math.max(0, s.reputation - 25),
 		}));
@@ -2922,6 +2942,7 @@ export default function StreetMapScene({
 			baseChancePercent: number;
 			resourceMultiplier: number;
 			buffMultiplier: number;
+			incidentSpecificMultiplier: number;
 			vigilanteMultiplier: number;
 			avgArchetypeFit: number;
 			staffingSupportMultiplier: number;
@@ -2983,7 +3004,8 @@ export default function StreetMapScene({
 									resourceMultiplier:
 										rollOutcome.resourceMultiplier,
 									buffMultiplier: rollOutcome.buffMultiplier,
-									incidentSpecificMultiplier: rollOutcome.incidentSpecificMultiplier,
+									incidentSpecificMultiplier:
+										rollOutcome.incidentSpecificMultiplier,
 									vigilanteMultiplier:
 										rollOutcome.vigilanteMultiplier,
 									avgArchetypeFit:
@@ -3032,6 +3054,7 @@ export default function StreetMapScene({
 			baseChancePercent: inc.successChance,
 			resourceMultiplier: 1,
 			buffMultiplier: 1,
+			incidentSpecificMultiplier: 1,
 			vigilanteMultiplier: 1,
 			avgArchetypeFit: 1,
 			staffingSupportMultiplier: 1,
@@ -3061,6 +3084,7 @@ export default function StreetMapScene({
 			baseChancePercent: inc.successChance,
 			resourceMultiplier: 1,
 			buffMultiplier: 1,
+			incidentSpecificMultiplier: 1,
 			vigilanteMultiplier: 1,
 			avgArchetypeFit: 1,
 			staffingSupportMultiplier: 1,
@@ -4184,109 +4208,91 @@ export default function StreetMapScene({
 
 			<AnimatePresence>
 				{dialogue ? (
-					<>
-						{/* Backdrop – closes dialogue when clicked outside */}
-						<motion.div
-							initial={{ opacity: 0 }}
-							animate={{ opacity: 1 }}
-							exit={{ opacity: 0 }}
-							transition={{ duration: 0.2 }}
-							className="fixed inset-0 z-[2015] bg-black/30"
-							onClick={() => setDialogue(null)}
-						/>
-						{/* Dialogue container – stop propagation to prevent backdrop click from closing */}
-						<motion.div
-							initial={{ opacity: 0, y: 16 }}
-							animate={{ opacity: 1, y: 0 }}
-							exit={{ opacity: 0, y: 10 }}
-							transition={{ duration: 0.2, ease: "easeOut" }}
-							className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[2020] w-[min(52vw,720px)] min-w-[320px]"
-							onClick={(e) => e.stopPropagation()}
-						>
-							<div className="overflow-hidden rounded-xl border border-amber-900/40 bg-black/75 shadow-lg backdrop-blur-md relative">
-								{dialogue.dialogueType && (
-									<div className="absolute top-3 right-4 flex items-center justify-center rounded-full py-1 px-3 text-[9px] leading-none font-bold uppercase tracking-wider bg-transparent text-amber-400 border border-amber-900/40">
-										{dialogue.dialogueType === "past"
-											? "reminiscing"
-											: dialogue.dialogueType ===
-												  "current"
-												? "responding"
-												: dialogue.dialogueType ===
-													  "story"
-													? "story"
-													: ""}
+					<motion.div
+						initial={{ opacity: 0, y: -16 }}
+						animate={{ opacity: 1, y: 0 }}
+						exit={{ opacity: 0, y: -10 }}
+						transition={{ duration: 0.2, ease: "easeOut" }}
+						className="absolute top-4 right-4 z-[2020] w-[min(40vw,560px)] max-w-[560px] pointer-events-none"
+					>
+						<div className="overflow-hidden rounded-xl border border-amber-900/40 bg-black/75 shadow-lg backdrop-blur-md relative pointer-events-none">
+							{dialogue.dialogueType && (
+								<div className="absolute top-3 right-4 flex items-center justify-center rounded-full py-1 px-3 text-[9px] leading-none font-bold uppercase tracking-wider bg-transparent text-amber-400 border border-amber-900/40">
+									{dialogue.dialogueType === "past"
+										? "reminiscing"
+										: dialogue.dialogueType === "current"
+											? "responding"
+											: dialogue.dialogueType === "story"
+												? "story"
+												: ""}
+								</div>
+							)}
+							<div className="flex items-start">
+								<div className="shrink-0 border-r border-amber-900/30">
+									<div className="relative h-[160px] w-[120px] overflow-hidden rounded-none pt-10">
+										<Image
+											src={dialogue.portrait}
+											alt={dialogue.name}
+											fill
+											className="object-cover object-top"
+											sizes="132px"
+										/>
 									</div>
-								)}
-								<div className="flex items-start">
-									<div className="shrink-0 border-r border-amber-900/30">
-										<div className="relative h-[160px] w-[120px] overflow-hidden rounded-none pt-10">
-											<Image
-												src={dialogue.portrait}
-												alt={dialogue.name}
-												fill
-												className="object-cover object-top"
-												sizes="132px"
-											/>
+								</div>
+								<div className="flex h-[160px] flex-1 flex-col justify-between px-4 py-3">
+									<div>
+										<div className="text-[10px] uppercase tracking-[0.2em] text-amber-400/70">
+											{dialogue.role}
 										</div>
-									</div>
-									<div className="flex h-[160px] flex-1 flex-col justify-between px-4 py-3">
-										<div>
-											<div className="text-[10px] uppercase tracking-[0.2em] text-amber-400/70">
-												{dialogue.role}
+										<div className="flex items-center gap-2 mt-1">
+											<div className="text-base font-bold text-amber-100">
+												{dialogue.name}
 											</div>
-											<div className="flex items-center gap-2 mt-1">
-												<div className="text-base font-bold text-amber-100">
-													{dialogue.name}
-												</div>
-											</div>
-
-											{/* Spectrogram animation */}
-											<div className="mt-3 h-5 overflow-hidden">
-												<div className="flex h-full items-end gap-[3px]">
-													{Array.from({
-														length: 20,
-													}).map((_, i) => (
-														<div
-															key={i}
-															className="flex h-4 items-end"
-														>
-															<motion.div
-																className="w-[2px] rounded-full bg-amber-400/70"
-																animate={{
-																	height: [
-																		3, 12,
-																		5, 16,
-																		4,
-																	],
-																}}
-																transition={{
-																	duration: 0.8,
-																	repeat: Infinity,
-																	repeatType:
-																		"loop",
-																	delay:
-																		i *
-																		0.05,
-																	ease: "easeInOut",
-																}}
-																style={{
-																	height: 4,
-																}}
-															/>
-														</div>
-													))}
-												</div>
-											</div>
-
-											<p className="mt-2 line-clamp-2 text-sm leading-relaxed text-amber-100/80">
-												{dialogue.text}
-											</p>
 										</div>
+
+										{/* Spectrogram animation */}
+										<div className="mt-3 h-5 overflow-hidden">
+											<div className="flex h-full items-end gap-[3px]">
+												{Array.from({
+													length: 20,
+												}).map((_, i) => (
+													<div
+														key={i}
+														className="flex h-4 items-end"
+													>
+														<motion.div
+															className="w-[2px] rounded-full bg-amber-400/70"
+															animate={{
+																height: [
+																	3, 12, 5,
+																	16, 4,
+																],
+															}}
+															transition={{
+																duration: 0.8,
+																repeat: Infinity,
+																repeatType:
+																	"loop",
+																delay: i * 0.05,
+																ease: "easeInOut",
+															}}
+															style={{
+																height: 4,
+															}}
+														/>
+													</div>
+												))}
+											</div>
+										</div>
+
+									<p className="mt-2 text-sm leading-relaxed text-amber-100/80">
+										{dialogue.text}
+									</p>
 									</div>
 								</div>
 							</div>
-						</motion.div>
-					</>
+						</div>
+					</motion.div>
 				) : null}
 			</AnimatePresence>
 
@@ -4679,6 +4685,56 @@ export default function StreetMapScene({
 				</AnimatePresence>
 			</div>
 
+			{/* Options Tab (below police, matches style) */}
+			<div
+				className="fixed left-0 flex items-start"
+				style={{ top: 120 + 40, zIndex: 2000 }}
+			>
+				<div className="pointer-events-auto">
+					<button
+						type="button"
+						onClick={() => toggleExclusiveLeftPanel("options")}
+						className="cursor-pointer rounded-r-full rounded-l-none border border-amber-900/60 bg-black/75 px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-amber-200/80 hover:border-amber-500/80 hover:text-amber-100 transition-colors flex items-center gap-1 shadow-[0_0_18px_rgba(120,53,15,0.18)]"
+					>
+						<span>Options</span>
+						<span className="text-[11px] flex items-center">
+							{state.showOptionsPanel ? (
+								<ChevronLeft className="w-3 h-3" aria-hidden />
+							) : (
+								<ChevronRight className="w-3 h-3" aria-hidden />
+							)}
+						</span>
+					</button>
+				</div>
+
+				<AnimatePresence initial={false}>
+					{state.showOptionsPanel && (
+						<motion.div
+							key="options-panel"
+							initial={{ x: -320, opacity: 0 }}
+							animate={{ x: 0, opacity: 1 }}
+							exit={{ x: -320, opacity: 0 }}
+							transition={{
+								type: "tween",
+								duration: 0.22,
+								ease: "easeOut",
+							}}
+							className="pointer-events-auto ml-2 w-72 max-w-[80vw] rounded-xl border border-amber-900/40 bg-black/55 backdrop-blur-md shadow-xl shadow-black/60 flex flex-col"
+						>
+							<div className="flex items-center justify-between px-4 py-3 border-b border-amber-900/40">
+								<div className="text-xs font-semibold tracking-[0.18em] uppercase text-amber-300/80">
+									Options
+								</div>
+							</div>
+
+						<div className="flex-1 p-4">
+							<VolumeSlider />
+						</div>
+						</motion.div>
+					)}
+				</AnimatePresence>
+			</div>
+
 			{chanceRollOverlay && (
 				<IncidentChanceRollOverlay
 					rolled={chanceRollOverlay.rolled}
@@ -4921,7 +4977,8 @@ export default function StreetMapScene({
 						startingValuesRef.current?.vigilanteCount ??
 						state.ownedVigilanteIds.length,
 					policeHeat: 100 - state.reputation, // police heat as inverse of reputation
-					lootedResources: state.achievementProgress.totalCreditsEarned || 0,
+					lootedResources:
+						state.achievementProgress.totalCreditsEarned || 0,
 				}}
 				onQuit={() => {
 					// For now, quit goes to main menu or reloads

@@ -26,6 +26,7 @@ export function initialState(): GameState {
 		showIncidentPanel: true,
 		showMinigamePanel: false,
 		showPolicePanel: false,
+		showOptionsPanel: false,
 		showInventoryPanel: true,
 		inventoryTab: "vigilantes",
 		ownedVigilanteIds: ["bruce", "parya"],
