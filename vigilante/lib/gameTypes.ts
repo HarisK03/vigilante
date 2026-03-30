@@ -215,4 +215,5 @@ export type GameState = {
 	achievementProgress: AchievementProgress;
 	activeMinigame: ActiveMinigame | null;
 	reputation: number;
+	showCitizensNearIncidents: boolean;
 };

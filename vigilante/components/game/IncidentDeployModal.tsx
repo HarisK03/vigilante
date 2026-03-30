@@ -429,7 +429,7 @@ export default function IncidentDeployModal({
 						</div>
 
 						{/* Success Chance Breakdown */}
-						{successResult && (
+						{successResult && vigSet.size === 0 && (
 							<div className="space-y-2 px-5 py-4">
 								<h3 className="text-xs font-medium text-amber-400/90">
 									Success Chance

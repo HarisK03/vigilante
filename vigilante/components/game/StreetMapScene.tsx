@@ -27,6 +27,8 @@ import Inventory from "./Inventory";
 import PoliceSystem from "./police/policeSystem";
 import PoliceCaptureModal from "./police/policeCaptureModal";
 import type { PoliceEtaItem, PoliceRenderItem } from "./police/policeTypes";
+import VigilanteSystem from "./vigilante/VigilanteSystem";
+import type { VigilanteEtaItem, VigilanteRenderItem } from "./vigilante/vigilanteTypes";
 import IncidentChanceRollOverlay from "./IncidentChanceRollOverlay";
 import IncidentDeployModal from "./IncidentDeployModal";
 import GameOverOverlay from "./GameOverOverlay";
@@ -349,6 +351,7 @@ type CharacterPin = {
 	id: string;
 	name: string;
 	initial: string;
+	portrait?: string;
 	kind: CharacterKind;
 	lat: number;
 	lng: number;
@@ -963,9 +966,14 @@ function makeCharacterIcon(initial: string, kind: CharacterKind) {
 						text: "#f3f4f6",
 					};
 
+	const size = 40;
+	const half = size / 2;
+	const innerSize = 34;
+	const fontSize = 16;
+
 	const html = `<div style="
-    width:44px;
-    height:44px;
+    width:${size}px;
+    height:${size}px;
     display:flex;
     align-items:center;
     justify-content:center;
@@ -975,8 +983,8 @@ function makeCharacterIcon(initial: string, kind: CharacterKind) {
     pointer-events:auto;
   ">
     <div style="
-      width:30px;
-      height:30px;
+      width:${innerSize}px;
+      height:${innerSize}px;
       border-radius:999px;
       border:2px solid ${palette.border};
       background:${palette.bg};
@@ -985,9 +993,9 @@ function makeCharacterIcon(initial: string, kind: CharacterKind) {
       justify-content:center;
       color:${palette.text};
       font-weight:800;
-      font-size:14px;
+      font-size:${fontSize}px;
       text-shadow:0 0 4px rgba(0,0,0,0.8);
-      box-shadow:0 0 14px rgba(0,0,0,0.85);
+      box-shadow:0 0 10px rgba(0,0,0,0.85);
       pointer-events:none;
     ">${initial}</div>
   </div>`;
@@ -995,15 +1003,114 @@ function makeCharacterIcon(initial: string, kind: CharacterKind) {
 	return L.divIcon({
 		html,
 		className: "vigilante-character-icon",
-		iconSize: [44, 44],
-		iconAnchor: [22, 22],
+		iconSize: [size, size],
+		iconAnchor: [half, half],
+	});
+}
+
+function makeVigilantePortraitIcon(portrait: string | object | null | undefined, _initial: string) {
+	// Handle both string paths and imported image modules (which have a src property)
+	let src = "";
+
+	if (typeof portrait === "string") {
+		src = portrait;
+	} else if (portrait && typeof portrait === "object" && "src" in portrait) {
+		// @ts-expect-error - Next.js image module has src property
+		src = portrait.src ?? "";
+	}
+
+	const size = 40;
+	const half = size / 2;
+	const html = `<div style="
+    width:${size}px;
+    height:${size}px;
+    border-radius:999px;
+    border:3px solid #b45309;
+    overflow:hidden;
+    box-shadow:0 0 12px rgba(180,83,9,0.4), 0 0 6px rgba(0,0,0,0.6);
+    background:rgba(120,53,15,0.82);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+  ">
+    <img
+      src="${src}"
+      alt=""
+      style="
+        width:100%;
+        height:100%;
+        object-fit:cover;
+        pointer-events:none;
+      "
+      onerror="this.parentElement.style.background='rgba(120,53,15,0.82)'; this.style.display='none'"
+    />
+  </div>`;
+
+	return L.divIcon({
+		html,
+		className: "vigilante-character-icon",
+		iconSize: [size, size],
+		iconAnchor: [half, half],
+	});
+}
+
+function makePolicePortraitIcon(portrait: string | null | undefined, _initial: string) {
+	// Handle both string paths and imported image modules
+	let src = "";
+
+	if (typeof portrait === "string") {
+		src = portrait;
+	} else if (portrait && typeof portrait === "object" && "src" in portrait) {
+		// @ts-expect-error - Next.js image module has src property
+		src = portrait.src ?? "";
+	}
+
+	const size = 40;
+	const half = size / 2;
+	const html = `<div style="
+    width:${size}px;
+    height:${size}px;
+    border-radius:999px;
+    border:3px solid #1d4ed8;
+    overflow:hidden;
+    box-shadow:0 0 12px rgba(29,78,216,0.4), 0 0 6px rgba(0,0,0,0.6);
+    background:rgba(30,64,175,0.78);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+  ">
+    <img
+      src="${src}"
+      alt=""
+      style="
+        width:100%;
+        height:100%;
+        object-fit:cover;
+        pointer-events:none;
+      "
+      onerror="this.parentElement.style.background='rgba(30,64,175,0.78)'; this.style.display='none'"
+    />
+  </div>`;
+
+	return L.divIcon({
+		html,
+		className: "police-character-icon",
+		iconSize: [size, size],
+		iconAnchor: [half, half],
 	});
 }
 
 function makeRecruitIcon(initial: string) {
+	const size = 40;
+	const half = size / 2;
+	const innerSize = 34;
+	const fontSize = 16;
+
 	const html = `<div style="
-    width:44px;
-    height:44px;
+    width:${size}px;
+    height:${size}px;
     display:flex;
     align-items:center;
     justify-content:center;
@@ -1012,8 +1119,8 @@ function makeRecruitIcon(initial: string) {
     pointer-events:none;
   ">
     <div style="
-      width:34px;
-      height:34px;
+      width:${innerSize}px;
+      height:${innerSize}px;
       border-radius:999px;
       border:2px solid #b45309;
       background:rgba(120,53,15,0.86);
@@ -1022,9 +1129,9 @@ function makeRecruitIcon(initial: string) {
       justify-content:center;
       color:#fde68a;
       font-weight:800;
-      font-size:15px;
+      font-size:${fontSize}px;
       text-shadow:0 0 4px rgba(0,0,0,0.85);
-      box-shadow:0 0 18px rgba(120,53,15,0.55);
+      box-shadow:0 0 12px rgba(120,53,15,0.55);
       pointer-events:none;
     ">${initial}</div>
   </div>`;
@@ -1032,8 +1139,8 @@ function makeRecruitIcon(initial: string) {
 	return L.divIcon({
 		html,
 		className: "vigilante-recruit-icon",
-		iconSize: [44, 44],
-		iconAnchor: [22, 22],
+		iconSize: [size, size],
+		iconAnchor: [half, half],
 	});
 }
 
@@ -1159,10 +1266,15 @@ function CharacterMarkerItem({
 }) {
 	const markerRef = useRef<L.Marker | null>(null);
 
-	const icon = useMemo(
-		() => makeCharacterIcon(pin.initial, pin.kind),
-		[pin.initial, pin.kind],
-	);
+	const icon = useMemo(() => {
+		if (pin.kind === "vigilante" && pin.portrait) {
+			return makeVigilantePortraitIcon(pin.portrait, pin.initial);
+		}
+		if (pin.kind === "police" && pin.portrait) {
+			return makePolicePortraitIcon(pin.portrait, pin.initial);
+		}
+		return makeCharacterIcon(pin.initial, pin.kind);
+	}, [pin.initial, pin.kind, pin.portrait]);
 
 	useEffect(() => {
 		if (!markerRef.current) return;
@@ -1952,6 +2064,27 @@ export default function StreetMapScene({
 		}
 	}, []);
 
+	const handleVigilanteResolveIncident = useCallback((incidentId: string) => {
+		setState((s) => {
+			const incident = s.incidents.find((i) => i.id === incidentId);
+			const deployedIds = incident?.deployedVigilanteIds ?? [];
+
+			// Set incident to resolving state and prepare for dice roll
+			return {
+				...s,
+				selectedIncidentId:
+					s.selectedIncidentId === incidentId ? null : s.selectedIncidentId,
+				incidents: s.incidents.map((inc) =>
+					inc.id === incidentId
+						? { ...inc, status: "resolving" as const }
+						: inc
+				),
+			};
+		});
+
+		// Trigger dice roll for vigilante resolution (will be handled by effect)
+	}, []);
+
 	const toggleExclusiveLeftPanel = useCallback(
 		(panel: "incident" | "minigame" | "police" | "options") => {
 			setState((s) => {
@@ -2101,6 +2234,18 @@ export default function StreetMapScene({
 		contextLabel: string;
 	} | null>(null);
 
+	// Separate dice roll state for vigilante resolutions (they don't use resources)
+	const [vigilanteRollOverlay, setVigilanteRollOverlay] = useState<{
+		incidentId: string;
+		rolled: number;
+		adjustedPercent: number;
+		beforeLuckPercent: number;
+		success: boolean;
+		phase: "rolling" | "outcome";
+		breakdown: DispatchRollBreakdown;
+		contextLabel: string;
+	} | null>(null);
+
 	const resolveIncidentTimeoutRef = useRef<number | null>(null);
 	const cloudPushInFlightRef = useRef(false);
 
@@ -2111,20 +2256,29 @@ export default function StreetMapScene({
 		PoliceRenderItem[]
 	>(() =>
 		STATIC_CHARACTER_BASES.filter((pin) => pin.kind === "police").map(
-			(pin) => ({
-				pinId: pin.id as PoliceRenderItem["pinId"],
-				name: pin.name,
-				initial: pin.initial,
-				lat: pin.lat,
-				lng: pin.lng,
-				mode: "patrolling",
-				visiblePath: [],
-				assignedIncidentId: null,
-			}),
+			(pin) => {
+				const officer = NPC_DIALOGUE.police.find((p) => p.id === pin.id);
+				return {
+					pinId: pin.id as PoliceRenderItem["pinId"],
+					name: pin.name,
+					initial: pin.initial,
+					portrait: officer?.portrait ?? "",
+					lat: pin.lat,
+					lng: pin.lng,
+					mode: "patrolling",
+					visiblePath: [],
+					assignedIncidentId: null,
+				};
+			},
 		),
 	);
 
 	const [policeEtaItems, setPoliceEtaItems] = useState<PoliceEtaItem[]>([]);
+
+	const [vigilanteRenderItems, setVigilanteRenderItems] = useState<
+		VigilanteRenderItem[]
+	>([]);
+	const [vigilanteEtaItems, setVigilanteEtaItems] = useState<VigilanteEtaItem[]>([]);
 
 	const levelBoundsRef = useRef<Map<number, LatLngBounds>>(new Map());
 	const spawnPlacesByLevelRef = useRef<Map<number, OsmPlace[]>>(new Map());
@@ -2274,6 +2428,193 @@ export default function StreetMapScene({
 			cloudPushInFlightRef.current = false;
 		}
 	}, [cloudSync]);
+
+	// Watch for vigilante-completed incidents that need dice rolls
+	useEffect(() => {
+		// Don't trigger if gameplay is paused or overlay is already showing
+		if (isGameplayPausedByMinigame || chanceRollOverlay) return;
+
+		const incidentsNeedingRoll = state.incidents.filter(
+			(inc) =>
+				inc.status === "resolving" &&
+				inc.deployedVigilanteIds &&
+				inc.deployedVigilanteIds.length > 0 &&
+				!inc.resolution, // Not yet resolved
+		);
+
+		if (incidentsNeedingRoll.length === 0) return;
+
+		const incident = incidentsNeedingRoll[0];
+		const incidentId = incident.id;
+		const deployedVigIds = incident.deployedVigilanteIds ?? [];
+
+		const deployedVigs = vigilantes.filter((v) =>
+			deployedVigIds.includes(v.id),
+		);
+
+		if (deployedVigs.length === 0) return;
+
+		// Extract resource IDs from assignedResources (AssignedResource[] -> string[])
+		const resourceIds = (incident.assignedResources ?? []).map(
+			(r) => r.resource,
+		);
+
+		// Calculate success chance using the same logic as manual deployment
+		const result = calculateSimpleSuccess(
+			incident.successChance,
+			incident.category,
+			incident.typeLabel,
+			deployedVigs,
+			resourceIds,
+			state.purchasedUpgradeIds,
+			0, // No rapid response bonus for auto-resolved
+		);
+
+		const rolled = generateRoll(result.avgArchetypeFit);
+
+		const rollOutcome: IncidentRollResolution = {
+			success: rolled < result.beforeLuckPercent,
+			adjustedPercent: result.successPercent,
+			beforeLuckPercent: result.beforeLuckPercent,
+			rolled,
+			baseChancePercent: incident.successChance,
+			resourceMultiplier: 1,
+			buffMultiplier: 1,
+			incidentSpecificMultiplier: result.incidentSpecificMultiplier,
+			vigilanteMultiplier: 1,
+			avgArchetypeFit: result.avgArchetypeFit,
+			staffingSupportMultiplier: 1,
+			gearPresenceMultiplier: 1,
+			luckDeltaPercent: 0,
+		};
+
+		// Show the dice roll overlay
+		setChanceRollOverlay({
+			incidentId: incidentId,
+			rolled: rollOutcome.rolled,
+			adjustedPercent: rollOutcome.adjustedPercent,
+			beforeLuckPercent: rollOutcome.beforeLuckPercent,
+			success: rollOutcome.success,
+			phase: "rolling",
+			hadDeployedGear: resourceIds.length > 0,
+			breakdown: {
+				baseChancePercent: rollOutcome.baseChancePercent,
+				resourceMultiplier: rollOutcome.resourceMultiplier,
+				buffMultiplier: rollOutcome.buffMultiplier,
+				incidentSpecificMultiplier: rollOutcome.incidentSpecificMultiplier,
+				vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
+				avgArchetypeFit: rollOutcome.avgArchetypeFit,
+				staffingSupportMultiplier: rollOutcome.staffingSupportMultiplier,
+				gearPresenceMultiplier: rollOutcome.gearPresenceMultiplier,
+				luckDeltaPercent: rollOutcome.luckDeltaPercent,
+			},
+			contextLabel: `${incident.typeLabel} · ${fallbackTypeLabel(incident.category)}`,
+		});
+
+		// Set timeout to finish resolution after roll animation
+		const RESOLVE_MS = 2600;
+		const finishIncidentResolution = () => {
+			resolveIncidentTimeoutRef.current = null;
+			resolveIncidentDueAtRef.current = null;
+			resolveIncidentResumeFnRef.current = null;
+			pausedResolveRemainingMsRef.current = null;
+
+			setState((s) => {
+				const cur = s.incidents.find((x) => x.id === incidentId);
+				if (!cur || cur.status !== "resolving") return s;
+
+				const deployed = cur.deployedResourceIds ?? [];
+				let pool = s.resourcePool;
+				if (deployed.length > 0) {
+					if (rollOutcome.success) {
+						pool = returnDeployment(pool, deployed);
+					} else if (rollScavengerSalvage(s.purchasedUpgradeIds)) {
+						pool = returnDeployment(pool, deployed);
+					} else {
+						pool = forfeitDeployment(pool, deployed);
+					}
+				}
+
+				const missionCredits = rollOutcome.success ? 80 : 20;
+				const reputationDelta = rollOutcome.success ? 0 : -33;
+
+				const achievementUpdates = achievements.trackIncidentResolution(
+					incident.category,
+					rollOutcome.success,
+					missionCredits,
+				);
+
+				return {
+					...s,
+					resourcePool: pool,
+					credits: Math.max(0, s.credits + missionCredits),
+					careerStats: {
+						...s.careerStats,
+						dispatchesCompleted: s.careerStats.dispatchesCompleted + 1,
+						incidentsResolvedSuccess:
+							s.careerStats.incidentsResolvedSuccess +
+							(rollOutcome.success ? 1 : 0),
+						incidentsResolvedFailure:
+							s.careerStats.incidentsResolvedFailure +
+							(rollOutcome.success ? 0 : 1),
+					},
+					achievementProgress: {
+						...s.achievementProgress,
+						...achievementUpdates,
+					},
+					incidents: s.incidents.map((x) =>
+						x.id === incidentId
+							? {
+									...x,
+									status: "resolved" as const,
+									deployedResourceIds: [],
+									resolution: {
+										success: rollOutcome.success,
+										adjustedPercent: rollOutcome.adjustedPercent,
+										beforeLuckPercent: rollOutcome.beforeLuckPercent,
+										rolled: rollOutcome.rolled,
+										baseChancePercent: rollOutcome.baseChancePercent,
+										resourceMultiplier: rollOutcome.resourceMultiplier,
+										buffMultiplier: rollOutcome.buffMultiplier,
+										incidentSpecificMultiplier:
+											rollOutcome.incidentSpecificMultiplier,
+										vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
+										avgArchetypeFit: rollOutcome.avgArchetypeFit,
+										staffingSupportMultiplier:
+											rollOutcome.staffingSupportMultiplier,
+										gearPresenceMultiplier:
+											rollOutcome.gearPresenceMultiplier,
+										luckDeltaPercent: rollOutcome.luckDeltaPercent,
+									} as IncidentResolution,
+								}
+							: x,
+					),
+					reputation: Math.max(
+						0,
+						Math.min(100, s.reputation + reputationDelta),
+					),
+				};
+			});
+
+			if (!rollOutcome.success) {
+				triggerReputationLoss(33);
+			}
+
+			setChanceRollOverlay((prev) =>
+				prev && prev.incidentId === incidentId
+					? { ...prev, phase: "outcome" }
+					: prev,
+			);
+		};
+
+		resolveIncidentResumeFnRef.current = finishIncidentResolution;
+		resolveIncidentDueAtRef.current = Date.now() + RESOLVE_MS;
+
+		resolveIncidentTimeoutRef.current = window.setTimeout(
+			finishIncidentResolution,
+			RESOLVE_MS,
+		);
+	}, [state.incidents, chanceRollOverlay, isGameplayPausedByMinigame]); // Dependencies
 
 	useEffect(() => {
 		if (!cloudSync) return;
@@ -3703,6 +4044,11 @@ export default function StreetMapScene({
 	}, [isGameplayPausedByMinigame, mode, sessionId, selectedRecruitLeadId]);
 
 	const incidentCitizenPins = useMemo(() => {
+		// If citizens are disabled, return empty array
+		if (!state.showCitizensNearIncidents) {
+			return [];
+		}
+
 		const activeIncidents = state.incidents.filter(isOngoingIncident);
 
 		const citizenTemplates = [
@@ -3727,38 +4073,31 @@ export default function StreetMapScene({
 					lng: stable.lng,
 				};
 			});
-	}, [state.incidents]);
+	}, [state.incidents, state.showCitizensNearIncidents]);
 
 	const visibleDynamicPins = useMemo(() => {
 		const policePins: CharacterPin[] = policeRenderItems.map((item) => ({
 			id: item.pinId,
 			name: item.name,
 			initial: item.initial,
+			portrait: item.portrait,
 			kind: "police",
 			lat: item.lat,
 			lng: item.lng,
 		}));
 
-		const ownedRoster = vigilantes.filter((v) =>
-			state.ownedVigilanteIds.includes(v.id),
-		);
+		const vigilantePins: CharacterPin[] = vigilanteRenderItems.map((item) => ({
+			id: item.pinId,
+			name: item.name,
+			initial: item.initial,
+			portrait: item.portrait,
+			kind: "vigilante",
+			lat: item.lat,
+			lng: item.lng,
+		}));
 
-		const ownedPins: CharacterPin[] = ownedRoster.map((v, i) => {
-			const off =
-				OWNED_VIG_MARKER_OFFSETS[i % OWNED_VIG_MARKER_OFFSETS.length];
-
-			return {
-				id: v.id,
-				name: v.alias,
-				initial: v.name[0]?.toUpperCase() ?? "V",
-				kind: "vigilante",
-				lat: BASE[0] + off.dLat,
-				lng: BASE[1] + off.dLng,
-			};
-		});
-
-		return [...incidentCitizenPins, ...policePins, ...ownedPins];
-	}, [state.ownedVigilanteIds, incidentCitizenPins, policeRenderItems]);
+		return [...incidentCitizenPins, ...policePins, ...vigilantePins];
+	}, [incidentCitizenPins, policeRenderItems, vigilanteRenderItems]);
 
 	const zoomConfig = useMemo(
 		() => ({
@@ -3880,7 +4219,8 @@ export default function StreetMapScene({
         .leaflet-pane.theftSitePane { z-index: 900 !important; }
         .leaflet-marker-icon.vigilante-character-icon,
         .leaflet-marker-icon.vigilante-recruit-icon,
-        .leaflet-marker-icon.vigilante-theftsite-icon {
+        .leaflet-marker-icon.vigilante-theftsite-icon,
+        .leaflet-marker-icon.police-character-icon {
           pointer-events: auto !important;
         }
 
@@ -3889,7 +4229,9 @@ export default function StreetMapScene({
         .vigilante-recruit-icon > div,
         .vigilante-recruit-icon > div > div,
         .vigilante-theftsite-icon > div,
-        .vigilante-theftsite-icon > div > div {
+        .vigilante-theftsite-icon > div > div,
+        .police-character-icon > div,
+        .police-character-icon > div > div {
           cursor: pointer !important;
           pointer-events: none !important;
         }
@@ -4025,6 +4367,40 @@ export default function StreetMapScene({
 					timerSlowdownMultiplier={getPoliceSlowdownMultiplier(
 						state.purchasedUpgradeIds,
 					)}
+				/>
+				<VigilanteSystem
+					incidents={state.incidents.map((incident) => ({
+						id: incident.id,
+						lat: incident.lat,
+						lng: incident.lng,
+						status:
+							incident.status === "active"
+								? "active"
+								: incident.status === "resolved"
+									? "resolved"
+									: "resolving",
+						createdAt: incident.createdAt,
+						expiresAt: incident.expiresAt,
+						deployedVigilanteIds: incident.deployedVigilanteIds,
+					}))}
+					ownedVigilanteSheets={vigilantes.filter((v) =>
+						state.ownedVigilanteIds.includes(v.id),
+					).map((v) => ({
+						id: v.id,
+						name: v.name,
+						alias: v.alias,
+						stats: v.stats,
+						portrait: v.portrait,
+					}))}
+					ownedVigilanteIds={state.ownedVigilanteIds}
+					onVigilanteRenderUpdate={setVigilanteRenderItems}
+					onVigilanteEtaUpdate={setVigilanteEtaItems}
+					onVigilanteResolveIncident={handleVigilanteResolveIncident}
+					paused={isGameplayPausedByMinigame}
+					timerSlowdownMultiplier={getTimerSlowdownMultiplier(
+						state.purchasedUpgradeIds,
+					)}
+					getBaseLocation={() => BASE}
 				/>
 				<CharacterMarkers
 					pins={visibleDynamicPins}
@@ -4638,7 +5014,7 @@ export default function StreetMapScene({
 											className="w-full text-left rounded-lg border px-3 py-2 text-xs border-amber-900/50 bg-black/40 text-amber-200/80 shadow-[inset_0_1px_0_rgba(251,191,36,0.03)]"
 										>
 											<div className="flex items-start gap-3">
-												<div className="mt-0.5 h-5 w-5 rounded-full border border-red-900 bg-red-900/30 flex items-center justify-center text-[11px] text-red-300">
+												<div className="mt-0.5 h-7 w-7 rounded-full border border-red-900 bg-red-900/30 flex items-center justify-center text-sm text-red-300">
 													P
 												</div>
 												<div className="flex-1">
@@ -4727,8 +5103,39 @@ export default function StreetMapScene({
 								</div>
 							</div>
 
-						<div className="flex-1 p-4">
+						<div className="flex-1 p-4 space-y-4">
 							<VolumeSlider />
+
+							{/* Citizens Near Incidents Toggle */}
+							<div className="flex items-center justify-between">
+								<div className="text-[11px] uppercase tracking-[0.16em] text-amber-200/80">
+									Citizens at Incidents
+								</div>
+								<button
+									type="button"
+									role="switch"
+									aria-checked={state.showCitizensNearIncidents}
+									onClick={() =>
+										setState((s) => ({
+											...s,
+											showCitizensNearIncidents: !s.showCitizensNearIncidents,
+										}))
+									}
+									className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:ring-offset-2 focus:ring-offset-black ${
+										state.showCitizensNearIncidents
+											? "bg-amber-600/80"
+											: "bg-amber-900/40"
+									}`}
+								>
+									<span
+										className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white/90 shadow-lg ring-0 transition duration-200 ease-in-out mt-0.5 ${
+											state.showCitizensNearIncidents
+												? "translate-x-4"
+												: "translate-x-0.5"
+										}`}
+									/>
+								</button>
+							</div>
 						</div>
 						</motion.div>
 					)}

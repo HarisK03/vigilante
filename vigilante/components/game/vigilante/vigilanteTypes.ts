@@ -6,6 +6,7 @@ export type VigilanteUnit = {
   pinId: string;
   displayName: string;
   initial: string;
+  portrait: string;
   patrolRouteId: string;
   speeds: {
     patrolMps: number;
@@ -43,9 +44,17 @@ export type VigilanteRenderItem = {
   pinId: string;
   name: string;
   initial: string;
+  portrait: string;
   lat: number;
   lng: number;
   mode: VigilanteMode;
   visiblePath: LatLngTuple[];
   assignedIncidentId: string | null;
+};
+
+export type VigilanteEtaItem = {
+  unitId: string;
+  name: string;
+  incidentId: string;
+  etaMs: number;
 };
