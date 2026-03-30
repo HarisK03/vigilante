@@ -42,13 +42,14 @@ import {
 	type ResourcePoolEntry,
 } from "@/lib/resourcePool";
 import { mergePurchasedBuffIds } from "@/lib/purchasedBuffs";
+import { restartRun as restartRunGame } from "@/lib/gameStateUtils";
 import {
-	initialState,
-	loadState,
-	saveState,
-	restartRun as restartRunGame,
-} from "@/lib/gameStateUtils";
-import type { GameState, CareerStats, Incident, IncidentResolution, IncidentStatus, RecruitLead } from "@/lib/gameTypes";
+	DEFAULT_CAREER_STATS,
+	mergeCareerStats,
+	type CareerStats,
+} from "@/lib/careerStats";
+import type { GameState, Incident, IncidentResolution, IncidentStatus, RecruitLead } from "@/lib/gameTypes";
+// import { mergeResourcePool } from
 import { markCloudFlush, upsertGameSave } from "@/lib/cloudSaves";
 import { readSave, touchSave, type SaveSlotId } from "@/lib/saves";
 import { DEFAULT_ACHIEVEMENT_PROGRESS } from "@/lib/achievements";
@@ -3233,6 +3234,7 @@ export default function StreetMapScene({
 			baseChancePercent: number;
 			resourceMultiplier: number;
 			buffMultiplier: number;
+			incidentSpecificMultiplier: number;
 			vigilanteMultiplier: number;
 			avgArchetypeFit: number;
 			staffingSupportMultiplier: number;
@@ -3349,6 +3351,7 @@ export default function StreetMapScene({
 			baseChancePercent: inc.successChance,
 			resourceMultiplier: 1,
 			buffMultiplier: 1,
+			incidentSpecificMultiplier: 1,
 			vigilanteMultiplier: 1,
 			avgArchetypeFit: 1,
 			staffingSupportMultiplier: 1,
@@ -3384,6 +3387,7 @@ export default function StreetMapScene({
 			baseChancePercent: inc.successChance,
 			resourceMultiplier: 1,
 			buffMultiplier: 1,
+			incidentSpecificMultiplier: 1,
 			vigilanteMultiplier: 1,
 			avgArchetypeFit: 1,
 			staffingSupportMultiplier: 1,
