@@ -64,6 +64,21 @@ import {
 	getTimerSlowdownMultiplier,
 	rollScavengerSalvage,
 } from "@/lib/successModifiers";
+import BombDefusalModal from "@/components/minigames/BombDefusalModal";
+import BombRecruitRewardModal from "@/components/minigames/bomb-defusal/BombRecruitRewardModal";
+import {
+	clickSymbol,
+	createBombDefusalSession,
+	expireSessionIfNeeded,
+	restartBombDefusalSession,
+	selectRightSlot,
+	submitPhase2Selection,
+} from "@/components/minigames/bomb-defusal/bombDefusalEngine";
+import type {
+	BombDefusalSession,
+	BombRole,
+	Phase2Symbol,
+} from "@/components/minigames/bomb-defusal/types";
 
 // Helper to call AI success calculation API
 async function callAISuccessCalc(params: {
@@ -208,13 +223,19 @@ import {
 	subscribeToSessionMarkers,
 	subscribeToSession,
 	getSessionById,
+	getSessionPlayers,
 	updateSessionPausedBy,
 	updateConsumedTheftSites,
 	updateSessionReputation,
+	getActiveBombDefusalSession,
+	createMultiplayerBombDefusalSession,
+	updateMultiplayerBombDefusalSession,
+	subscribeToBombDefusalSession,
 } from "../../lib/multiplayer";
 import type {
 	AssignedResource,
 	AchievementProgress,
+	MultiplayerBombDefusalSessionRow,
 } from "../../lib/gameTypes";
 import { getSupabaseBrowserClient } from "../../lib/supabaseClient";
 
@@ -1104,9 +1125,9 @@ function PoliceEtaBar({ etaMs }: { etaMs: number }) {
 // ── Map sub-components ────────────────────────────────────────────────────────
 
 function ZoomController({
-							level,
-							onBoundsReady,
-						}: {
+	level,
+	onBoundsReady,
+}: {
 	level: number;
 	onBoundsReady: (level: number, bounds: LatLngBounds) => void;
 }) {
@@ -1145,9 +1166,9 @@ function ZoomController({
 }
 
 function CharacterMarkerItem({
-								 pin,
-								 onSelect,
-							 }: {
+	pin,
+	onSelect,
+}: {
 	pin: CharacterPin;
 	onSelect: (pin: CharacterPin) => void;
 }) {
@@ -1196,9 +1217,9 @@ function CharacterMarkerItem({
 }
 
 function CharacterMarkers({
-							  pins,
-							  onSelect,
-						  }: {
+	pins,
+	onSelect,
+}: {
 	pins: CharacterPin[];
 	onSelect: (pin: CharacterPin) => void;
 }) {
@@ -1216,9 +1237,9 @@ function CharacterMarkers({
 }
 
 function RecruitMarkers({
-							leads,
-							onSelect,
-						}: {
+	leads,
+	onSelect,
+}: {
 	leads: RecruitLead[];
 	onSelect: (lead: RecruitLead) => void;
 }) {
@@ -1244,10 +1265,10 @@ function RecruitMarkers({
 }
 
 function TheftSiteMarkers({
-							  //working as intended on master branch Thursday March 26 3:00AM EDT
-							  sites,
-							  onSelect,
-						  }: {
+	//working as intended on master branch Thursday March 26 3:00AM EDT
+	sites,
+	onSelect,
+}: {
 	sites: TheftSite[];
 	onSelect: (site: TheftSite) => void;
 }) {
@@ -1271,10 +1292,10 @@ function TheftSiteMarkers({
 }
 
 function IncidentMarkers({
-							 incidents,
-							 selectedId,
-							 onSelect,
-						 }: {
+	incidents,
+	selectedId,
+	onSelect,
+}: {
 	incidents: Incident[];
 	selectedId: string | null;
 	onSelect: (id: string) => void;
@@ -1708,8 +1729,8 @@ function loadState(saveKey: string): GameState {
 					: true,
 			inventoryTab:
 				p.inventoryTab === "vigilantes" ||
-				p.inventoryTab === "resources" ||
-				p.inventoryTab === "buffs"
+					p.inventoryTab === "resources" ||
+					p.inventoryTab === "buffs"
 					? p.inventoryTab
 					: "vigilantes",
 			ownedVigilanteIds: Array.isArray(p.ownedVigilanteIds)
@@ -1740,8 +1761,8 @@ function loadState(saveKey: string): GameState {
 			unlockedAchievementIds: Array.isArray(p.unlockedAchievementIds)
 				? (
 					p.unlockedAchievementIds as
-						| string[]
-						| UnlockedAchievement[]
+					| string[]
+					| UnlockedAchievement[]
 				).map((a) =>
 					typeof a === "string"
 						? { achievementId: a, unlockedAt: Date.now() }
@@ -1764,14 +1785,47 @@ function saveState(saveKey: string, state: GameState) {
 	localStorage.setItem(saveKey, JSON.stringify(state));
 }
 
+function formatBombDefusalError(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	if (typeof error === "string") return error;
+	try {
+		return JSON.stringify(error);
+	} catch {
+		return String(error);
+	}
+}
+
+function mapBombDefusalRowToSession(
+	row:
+		| MultiplayerBombDefusalSessionRow
+		| (MultiplayerBombDefusalSessionRow & { session_state: BombDefusalSession }),
+): BombDefusalSession {
+	if ("session_state" in row && row.session_state) {
+		return row.session_state;
+	}
+
+	return {
+		id: row.id,
+		status: row.status,
+		phase: row.phase,
+		countdownEndAt: row.countdown_end_at,
+		playerAUserId: row.player_a_user_id,
+		playerBUserId: row.player_b_user_id,
+		phase1Config: row.phase1_config as BombDefusalSession["phase1Config"],
+		phase1State: row.phase1_state as BombDefusalSession["phase1State"],
+		phase2Config: row.phase2_config as BombDefusalSession["phase2Config"],
+		phase2State: row.phase2_state as BombDefusalSession["phase2State"],
+	};
+}
+
 export default function StreetMapScene({
-										   saveKey,
-										   saveSlot,
-										   cloudSync,
-										   mode = "singleplayer",
-										   sessionId,
-										   multiplayerStartedAt,
-									   }: Props) {
+	saveKey,
+	saveSlot,
+	cloudSync,
+	mode = "singleplayer",
+	sessionId,
+	multiplayerStartedAt,
+}: Props) {
 	const [state, setState] = useState<GameState>(() =>
 		mode === "singleplayer" && saveKey
 			? loadState(saveKey)
@@ -1782,6 +1836,20 @@ export default function StreetMapScene({
 
 	const [isHost, setIsHost] = useState(false);
 	const [pausedByOther, setPausedByOther] = useState(false);
+	const [remoteBombIncidentId, setRemoteBombIncidentId] = useState<string | null>(null);
+	const [bombDefusalRowId, setBombDefusalRowId] = useState<string | null>(null);
+	const [bombDefusalSession, setBombDefusalSession] =
+		useState<BombDefusalSession | null>(null);
+	const [bombDefusalRole, setBombDefusalRole] = useState<BombRole | null>(null);
+	const [bombDefusalIncidentId, setBombDefusalIncidentId] = useState<string | null>(null);
+	const [, setBombDefusalTick] = useState(0);
+	const bombDefusalResultHandledRef = useRef<string | null>(null);
+	const bombDefusalUnsubscribeRef = useRef<(() => void) | null>(null);
+	const bombDefusalExpirySyncRef = useRef(false);
+	const bombDefusalAutoOpenInFlightRef = useRef(false);
+	const [dismissedRemoteBombIncidentId, setDismissedRemoteBombIncidentId] =
+		useState<string | null>(null);
+	const [bombRewardIncidentId, setBombRewardIncidentId] = useState<string | null>(null);
 
 	const [selectedOwnedVigilanteId, setSelectedOwnedVigilanteId] = useState<
 		string | null
@@ -2009,6 +2077,7 @@ export default function StreetMapScene({
 		});
 	};
 
+
 	// Track starting values on initial load (for game over stats)
 	useEffect(() => {
 		if (startingValuesRef.current === null) {
@@ -2064,8 +2133,8 @@ export default function StreetMapScene({
 			// Pick random owned vigilante
 			const vigilante =
 				ownedVigilantes[
-					Math.floor(Math.random() * ownedVigilantes.length)
-					];
+				Math.floor(Math.random() * ownedVigilantes.length)
+				];
 			return {
 				type: "vigilante" as const,
 				profile: {
@@ -2084,8 +2153,8 @@ export default function StreetMapScene({
 			// Pick random police officer
 			const officer =
 				NPC_DIALOGUE.police[
-					Math.floor(Math.random() * NPC_DIALOGUE.police.length)
-					];
+				Math.floor(Math.random() * NPC_DIALOGUE.police.length)
+				];
 			return {
 				type: "police" as const,
 				profile: {
@@ -2534,8 +2603,33 @@ export default function StreetMapScene({
 				const myId = data?.user?.id;
 				if (!myId) return;
 
-				setPausedByOther(
-					!!session.paused_by && session.paused_by !== myId,
+				const isPausedByAnotherPlayer =
+					!!session.paused_by && session.paused_by !== myId;
+
+				const localBombIncidentId =
+					stateRef.current.activeMinigame?.type === "bomb_defusal"
+						? stateRef.current.activeMinigame.incidentId
+						: null;
+
+				const remoteBombIncident =
+					stateRef.current.incidents.find(
+						(incident) =>
+							incident.id !== localBombIncidentId &&
+							isBombDefusalIncident(incident) &&
+							incident.status === "resolving",
+					) ??
+					(isPausedByAnotherPlayer
+						? stateRef.current.incidents.find(
+							(incident) =>
+								incident.id !== localBombIncidentId &&
+								isBombDefusalIncident(incident) &&
+								incident.status !== "resolved",
+						) ?? null
+						: null);
+
+				setPausedByOther(isPausedByAnotherPlayer);
+				setRemoteBombIncidentId(
+					isPausedByAnotherPlayer ? remoteBombIncident?.id ?? null : null,
 				);
 			});
 		};
@@ -3162,7 +3256,7 @@ export default function StreetMapScene({
 			credits: number;
 			items: Array<{ type: string; quantity: number }>;
 		},
-		) => {
+	) => {
 		const theftIncident = makeTheftIncident(site);
 
 		setState((s) => ({
@@ -3268,14 +3362,273 @@ export default function StreetMapScene({
 
 	// ── Minigame helpers ──────────────────────────────────────────────────────
 
+	const isBombDefusalIncident = (incident: Incident) => {
+		const text = [
+			incident.typeLabel,
+			incident.title,
+			incident.summary,
+		]
+			.filter(Boolean)
+			.join(" ")
+			.toLowerCase();
+
+		const bombKeywords = [
+			"bomb",
+			"explosive",
+			"ied",
+			"suspicious package",
+			"device",
+		];
+
+		return (
+			incident.category === "crime" &&
+			bombKeywords.some((keyword) => text.includes(keyword))
+		);
+	};
+
 	const getMinigameForIncident = (
 		incident: Incident,
-	): { type: "fire"; difficulty: number } | null => {
+	): { type: "fire" | "bomb_defusal"; difficulty: number } | null => {
+		if (mode === "multiplayer" && sessionId && isBombDefusalIncident(incident)) {
+			return { type: "bomb_defusal", difficulty: 0 };
+		}
+
 		if (incident.category === "fire_rescue" && Math.random() <= 1) {
 			return { type: "fire", difficulty: 0 };
 		}
+
 		return null;
 	};
+
+	const bindBombDefusalSubscription = useCallback(
+		(incidentId: string) => {
+			if (!sessionId) return;
+
+			bombDefusalUnsubscribeRef.current?.();
+			bombDefusalUnsubscribeRef.current = subscribeToBombDefusalSession(
+				sessionId,
+				incidentId,
+				(nextRow) => {
+					if (!nextRow) return;
+					setBombDefusalRowId(nextRow.id);
+					setBombDefusalIncidentId(nextRow.incident_marker_id);
+					setBombDefusalSession(nextRow.session_state);
+				},
+			);
+		},
+		[sessionId],
+	);
+
+	const openBombDefusalTerminal = useCallback(
+		async (role: BombRole) => {
+			try {
+				if (!sessionId) return;
+
+				const incidentId =
+					role === "A"
+						? state.activeMinigame?.incidentId ?? null
+						: remoteBombIncidentId;
+
+				if (!incidentId) return;
+
+				const {
+					data: { user },
+				} = await getSupabaseBrowserClient().auth.getUser();
+
+				if (!user?.id) return;
+
+				let row = await getActiveBombDefusalSession(sessionId, incidentId);
+
+				if (!row && role === "A") {
+					const players = await getSessionPlayers(sessionId);
+					const otherPlayer = players.find((player) => player.user_id !== user.id);
+					if (!otherPlayer) return;
+
+					const session = createBombDefusalSession(
+						user.id,
+						otherPlayer.user_id,
+						60000,
+					);
+
+					row = await createMultiplayerBombDefusalSession({
+						multiplayerSessionId: sessionId,
+						incidentMarkerId: incidentId,
+						playerAUserId: user.id,
+						playerBUserId: otherPlayer.user_id,
+						session,
+					});
+				}
+
+				if (!row) return;
+
+				if (role === "A") {
+					await updateSessionPausedBy(sessionId, user.id);
+				}
+
+				setBombDefusalRowId(row.id);
+				setBombDefusalIncidentId(row.incident_marker_id);
+				setBombDefusalSession(row.session_state);
+				setBombDefusalRole(role);
+				setDismissedRemoteBombIncidentId((current) =>
+					current === row.incident_marker_id ? null : current,
+				);
+				bombDefusalResultHandledRef.current = null;
+
+				bindBombDefusalSubscription(incidentId);
+			} catch (error) {
+				console.error("[Bomb Defusal] Failed to open terminal:", formatBombDefusalError(error), error);
+			}
+		},
+		[bindBombDefusalSubscription, remoteBombIncidentId, sessionId, state.activeMinigame],
+	);
+
+	const closeBombDefusalTerminal = useCallback(() => {
+		bombDefusalUnsubscribeRef.current?.();
+		bombDefusalUnsubscribeRef.current = null;
+
+		setBombDefusalRowId(null);
+		setBombDefusalSession(null);
+		setBombDefusalRole(null);
+		setBombDefusalIncidentId(null);
+		bombDefusalResultHandledRef.current = null;
+	}, []);
+
+	const handleDismissBombPlaceholder = useCallback(() => {
+		bombDefusalAutoOpenInFlightRef.current = false;
+
+		if (remoteBombIncidentId) {
+			setDismissedRemoteBombIncidentId(remoteBombIncidentId);
+			setRemoteBombIncidentId(null);
+		}
+
+		closeBombDefusalTerminal();
+	}, [closeBombDefusalTerminal, remoteBombIncidentId]);
+
+	const syncBombDefusalSessionFromServer = useCallback(
+		async (incidentId: string | null = bombDefusalIncidentId ?? remoteBombIncidentId) => {
+			try {
+				if (!sessionId) return;
+
+				const supabase = getSupabaseBrowserClient();
+				let row: MultiplayerBombDefusalSessionRow | null = null;
+
+				if (bombDefusalRowId) {
+					const { data, error } = await supabase
+						.from("multiplayer_bomb_defusal_sessions")
+						.select("*")
+						.eq("id", bombDefusalRowId)
+						.maybeSingle();
+
+					if (error || !data) return;
+					row = data as MultiplayerBombDefusalSessionRow;
+				} else {
+					if (!incidentId) return;
+
+					const { data, error } = await supabase
+						.from("multiplayer_bomb_defusal_sessions")
+						.select("*")
+						.eq("multiplayer_session_id", sessionId)
+						.eq("incident_marker_id", incidentId)
+						.order("updated_at", { ascending: false })
+						.limit(1);
+
+					if (error || !data || data.length === 0) return;
+					row = data[0] as MultiplayerBombDefusalSessionRow;
+				}
+
+				if (!row) return;
+
+				setBombDefusalRowId(row.id);
+				setBombDefusalIncidentId(row.incident_marker_id);
+				setBombDefusalSession(mapBombDefusalRowToSession(row));
+			} catch (error) {
+				console.error("[Bomb Defusal] Failed to sync session from server:", formatBombDefusalError(error), error);
+			}
+		},
+		[bombDefusalIncidentId, bombDefusalRowId, remoteBombIncidentId, sessionId],
+	);
+
+	const handleBombDefusalCutWire = useCallback(
+		async (rightSlot: number) => {
+			if (!bombDefusalSession || !bombDefusalRowId) return;
+
+			try {
+				const result = selectRightSlot(bombDefusalSession, rightSlot);
+				if (!result.changed) return;
+
+				await updateMultiplayerBombDefusalSession({
+					id: bombDefusalRowId,
+					session: result.session,
+				});
+
+				setBombDefusalSession(result.session);
+			} catch (error) {
+				console.error("[Bomb Defusal] Failed to update phase 1 selection:", formatBombDefusalError(error), error);
+				await syncBombDefusalSessionFromServer();
+			}
+		},
+		[bombDefusalRowId, bombDefusalSession, syncBombDefusalSessionFromServer],
+	);
+
+	const handleBombDefusalClickSymbol = useCallback(
+		async (symbol: Phase2Symbol) => {
+			if (!bombDefusalSession || !bombDefusalRowId) return;
+
+			try {
+				const result = clickSymbol(bombDefusalSession, symbol);
+				if (!result.changed) return;
+
+				await updateMultiplayerBombDefusalSession({
+					id: bombDefusalRowId,
+					session: result.session,
+				});
+
+				setBombDefusalSession(result.session);
+			} catch (error) {
+				console.error("[Bomb Defusal] Failed to update phase 2 symbol click:", formatBombDefusalError(error), error);
+				await syncBombDefusalSessionFromServer();
+			}
+		},
+		[bombDefusalRowId, bombDefusalSession, syncBombDefusalSessionFromServer],
+	);
+
+	const handleBombDefusalSubmitPhase2 = useCallback(async () => {
+		if (!bombDefusalSession || !bombDefusalRowId) return;
+
+		try {
+			const result = submitPhase2Selection(bombDefusalSession);
+			if (!result.changed) return;
+
+			await updateMultiplayerBombDefusalSession({
+				id: bombDefusalRowId,
+				session: result.session,
+			});
+
+			setBombDefusalSession(result.session);
+		} catch (error) {
+			console.error("[Bomb Defusal] Failed to submit phase 2:", formatBombDefusalError(error), error);
+			await syncBombDefusalSessionFromServer();
+		}
+	}, [bombDefusalRowId, bombDefusalSession, syncBombDefusalSessionFromServer]);
+
+	const handleBombDefusalRestart = useCallback(async () => {
+		if (!bombDefusalSession || !bombDefusalRowId) return;
+
+		try {
+			const restarted = restartBombDefusalSession(bombDefusalSession, 60000);
+
+			await updateMultiplayerBombDefusalSession({
+				id: bombDefusalRowId,
+				session: restarted,
+			});
+
+			setBombDefusalSession(restarted);
+			bombDefusalResultHandledRef.current = null;
+		} catch (error) {
+			console.error("[Bomb Defusal] Failed to restart session:", formatBombDefusalError(error), error);
+			await syncBombDefusalSessionFromServer();
+		}
+	}, [bombDefusalRowId, bombDefusalSession, syncBombDefusalSessionFromServer]);
 
 	const finishIncidentResolutionForId = (
 		incidentId: string,
@@ -3337,34 +3690,34 @@ export default function StreetMapScene({
 				incidents: s.incidents.map((x) =>
 					x.id === incidentId
 						? {
-								...x,
-								status: "resolved" as const,
-								deployedResourceIds: [],
-								resolution: {
-									success: rollOutcome.success,
-									adjustedPercent:
-										rollOutcome.adjustedPercent,
-									beforeLuckPercent:
-										rollOutcome.beforeLuckPercent,
-									rolled: rollOutcome.rolled,
-									baseChancePercent:
-										rollOutcome.baseChancePercent,
-									resourceMultiplier:
-										rollOutcome.resourceMultiplier,
-									buffMultiplier: rollOutcome.buffMultiplier,
-									incidentSpecificMultiplier: rollOutcome.incidentSpecificMultiplier,
-									vigilanteMultiplier:
-										rollOutcome.vigilanteMultiplier,
-									avgArchetypeFit:
-										rollOutcome.avgArchetypeFit,
-									staffingSupportMultiplier:
-										rollOutcome.staffingSupportMultiplier,
-									gearPresenceMultiplier:
-										rollOutcome.gearPresenceMultiplier,
-									luckDeltaPercent:
-										rollOutcome.luckDeltaPercent,
-								} as IncidentResolution,
-							}
+							...x,
+							status: "resolved" as const,
+							deployedResourceIds: [],
+							resolution: {
+								success: rollOutcome.success,
+								adjustedPercent:
+									rollOutcome.adjustedPercent,
+								beforeLuckPercent:
+									rollOutcome.beforeLuckPercent,
+								rolled: rollOutcome.rolled,
+								baseChancePercent:
+									rollOutcome.baseChancePercent,
+								resourceMultiplier:
+									rollOutcome.resourceMultiplier,
+								buffMultiplier: rollOutcome.buffMultiplier,
+								incidentSpecificMultiplier: rollOutcome.incidentSpecificMultiplier,
+								vigilanteMultiplier:
+									rollOutcome.vigilanteMultiplier,
+								avgArchetypeFit:
+									rollOutcome.avgArchetypeFit,
+								staffingSupportMultiplier:
+									rollOutcome.staffingSupportMultiplier,
+								gearPresenceMultiplier:
+									rollOutcome.gearPresenceMultiplier,
+								luckDeltaPercent:
+									rollOutcome.luckDeltaPercent,
+							} as IncidentResolution,
+						}
 						: x,
 				),
 			};
@@ -3448,6 +3801,238 @@ export default function StreetMapScene({
 		});
 	};
 
+	const finalizeBombIncidentFromSession = useCallback(
+		(incidentId: string, success: boolean) => {
+			setState((s) =>
+				s.activeMinigame?.type === "bomb_defusal" && s.activeMinigame.incidentId === incidentId
+					? { ...s, activeMinigame: null }
+					: s,
+			);
+
+			if (mode === "multiplayer" && sessionId) {
+				void updateSessionPausedBy(sessionId, null).catch((error) => {
+					console.error("[Bomb Defusal] Failed to clear paused state:", formatBombDefusalError(error), error);
+				});
+
+				void updateMarkerStatus(sessionId, incidentId, "resolved").catch((error) => {
+					console.error("[Bomb Defusal] Failed to resolve multiplayer incident:", formatBombDefusalError(error), error);
+				});
+
+				if (!success) {
+					applyReputationDelta(-33);
+				}
+				return;
+			}
+
+			const inc = stateRef.current.incidents.find((i) => i.id === incidentId);
+			if (!inc) return;
+
+			finishIncidentResolutionForId(incidentId, {
+				success,
+				adjustedPercent: success ? 100 : 0,
+				beforeLuckPercent: success ? 100 : 0,
+				rolled: success ? 1 : 100,
+				baseChancePercent: inc.successChance,
+				resourceMultiplier: 1,
+				buffMultiplier: 1,
+				incidentSpecificMultiplier: 1,
+				vigilanteMultiplier: 1,
+				avgArchetypeFit: 1,
+				staffingSupportMultiplier: 1,
+				gearPresenceMultiplier: 1,
+				luckDeltaPercent: 0,
+			});
+		},
+		[mode, sessionId, applyReputationDelta],
+	);
+
+	useEffect(() => {
+		if (!bombDefusalSession || !bombDefusalRowId) return;
+
+		const timer = window.setInterval(async () => {
+			setBombDefusalTick((current) => current + 1);
+
+			if (bombDefusalRole !== "A") return;
+			if (bombDefusalExpirySyncRef.current) return;
+
+			const expired = expireSessionIfNeeded(bombDefusalSession);
+			if (expired.status === bombDefusalSession.status) return;
+
+			bombDefusalExpirySyncRef.current = true;
+			try {
+				await updateMultiplayerBombDefusalSession({
+					id: bombDefusalRowId,
+					session: expired,
+				});
+
+				setBombDefusalSession(expired);
+			} catch (error) {
+				console.error("[Bomb Defusal] Failed to sync expiry:", formatBombDefusalError(error), error);
+				await syncBombDefusalSessionFromServer();
+			} finally {
+				bombDefusalExpirySyncRef.current = false;
+			}
+		}, 250);
+
+		return () => window.clearInterval(timer);
+	}, [bombDefusalRole, bombDefusalRowId, bombDefusalSession, syncBombDefusalSessionFromServer]);
+
+	useEffect(() => {
+		if (!remoteBombIncidentId) {
+			bombDefusalAutoOpenInFlightRef.current = false;
+			if (bombDefusalRole === "B") {
+				closeBombDefusalTerminal();
+			}
+			return;
+		}
+
+		if (remoteBombIncidentId === dismissedRemoteBombIncidentId) {
+			bombDefusalAutoOpenInFlightRef.current = false;
+			return;
+		}
+
+		if (state.activeMinigame?.type === "bomb_defusal") return;
+		if (
+			bombDefusalRole === "B" &&
+			bombDefusalIncidentId === remoteBombIncidentId &&
+			bombDefusalSession
+		) {
+			bombDefusalAutoOpenInFlightRef.current = false;
+			return;
+		}
+
+		let cancelled = false;
+
+		const tryOpenBombDefusalTerminal = async () => {
+			if (cancelled) return;
+			if (bombDefusalAutoOpenInFlightRef.current) return;
+
+			bombDefusalAutoOpenInFlightRef.current = true;
+			try {
+				await openBombDefusalTerminal("B");
+			} finally {
+				bombDefusalAutoOpenInFlightRef.current = false;
+			}
+		};
+
+		void tryOpenBombDefusalTerminal();
+		const retryTimer = window.setInterval(() => {
+			if (cancelled) return;
+			if (bombDefusalRole === "B" && bombDefusalIncidentId === remoteBombIncidentId && bombDefusalSession) {
+				return;
+			}
+			void tryOpenBombDefusalTerminal();
+		}, 500);
+
+		return () => {
+			cancelled = true;
+			window.clearInterval(retryTimer);
+		};
+	}, [
+		bombDefusalIncidentId,
+		bombDefusalRole,
+		bombDefusalSession,
+		closeBombDefusalTerminal,
+		dismissedRemoteBombIncidentId,
+		openBombDefusalTerminal,
+		remoteBombIncidentId,
+		state.activeMinigame,
+	]);
+
+	useEffect(() => {
+		if (mode !== "multiplayer" || !sessionId) return;
+
+		const fallbackIncidentId = bombDefusalIncidentId ?? remoteBombIncidentId;
+		if (!bombDefusalRole && !fallbackIncidentId && !bombDefusalRowId) return;
+
+		let cancelled = false;
+
+		const syncFromServer = async () => {
+			if (cancelled) return;
+			await syncBombDefusalSessionFromServer(fallbackIncidentId ?? null);
+		};
+
+		void syncFromServer();
+
+		const pollTimer = window.setInterval(() => {
+			void syncFromServer();
+		}, 350);
+
+		return () => {
+			cancelled = true;
+			window.clearInterval(pollTimer);
+		};
+	}, [
+		bombDefusalIncidentId,
+		bombDefusalRole,
+		bombDefusalRowId,
+		mode,
+		remoteBombIncidentId,
+		sessionId,
+		syncBombDefusalSessionFromServer,
+	]);
+
+	useEffect(() => {
+		if (state.activeMinigame?.type === "bomb_defusal") return;
+		if (remoteBombIncidentId && remoteBombIncidentId !== dismissedRemoteBombIncidentId) return;
+		if (!bombDefusalSession) return;
+		closeBombDefusalTerminal();
+	}, [
+		bombDefusalSession,
+		closeBombDefusalTerminal,
+		dismissedRemoteBombIncidentId,
+		remoteBombIncidentId,
+		state.activeMinigame,
+	]);
+
+	useEffect(() => {
+		if (!bombDefusalSession || !bombDefusalRole) return;
+		if (bombDefusalSession.status === "active") return;
+
+		const resolvedIncidentId = bombDefusalIncidentId ?? remoteBombIncidentId ?? null;
+		const resolutionKey = `${resolvedIncidentId ?? "none"}:${bombDefusalRole}:${bombDefusalSession.status}`;
+		if (bombDefusalResultHandledRef.current === resolutionKey) return;
+		bombDefusalResultHandledRef.current = resolutionKey;
+
+		if (resolvedIncidentId) {
+			setDismissedRemoteBombIncidentId(resolvedIncidentId);
+			if (remoteBombIncidentId === resolvedIncidentId) {
+				setRemoteBombIncidentId(null);
+			}
+		}
+
+		bombDefusalAutoOpenInFlightRef.current = false;
+
+		if (bombDefusalRole === "A" && resolvedIncidentId) {
+			const status = bombDefusalSession.status;
+			closeBombDefusalTerminal();
+
+			if (status === "success") {
+				setBombRewardIncidentId(resolvedIncidentId);
+			}
+
+			finalizeBombIncidentFromSession(resolvedIncidentId, status === "success");
+			return;
+		}
+
+		closeBombDefusalTerminal();
+	}, [
+		bombDefusalIncidentId,
+		bombDefusalRole,
+		bombDefusalSession,
+		closeBombDefusalTerminal,
+		finalizeBombIncidentFromSession,
+		remoteBombIncidentId,
+		setBombRewardIncidentId,
+	]);
+
+	useEffect(() => {
+		return () => {
+			bombDefusalUnsubscribeRef.current?.();
+			bombDefusalUnsubscribeRef.current = null;
+		};
+	}, []);
+
 	const handleDeployConfirm = async (payload: {
 		vigilanteIds: string[];
 		resourceIds: string[];
@@ -3520,6 +4105,7 @@ export default function StreetMapScene({
 		};
 
 		const minigame = getMinigameForIncident(inc);
+
 		if (minigame) {
 			if (resolveIncidentTimeoutRef.current) {
 				clearTimeout(resolveIncidentTimeoutRef.current);
@@ -3556,12 +4142,20 @@ export default function StreetMapScene({
 					},
 				};
 			});
-			if (mode === "multiplayer" && sessionId) {
+
+			if (
+				mode === "multiplayer" &&
+				sessionId &&
+				minigame.type !== "bomb_defusal"
+			) {
 				const sb = getSupabaseBrowserClient();
 				sb.auth.getUser().then(({ data }) => {
-					if (data?.user?.id) void updateSessionPausedBy(sessionId, data.user.id);
+					if (data?.user?.id) {
+						void updateSessionPausedBy(sessionId, data.user.id);
+					}
 				});
 			}
+
 			return;
 		}
 
@@ -3582,11 +4176,11 @@ export default function StreetMapScene({
 				resourceMultiplier: rollOutcome.resourceMultiplier,
 				buffMultiplier: rollOutcome.buffMultiplier,
 				incidentSpecificMultiplier:
-				rollOutcome.incidentSpecificMultiplier,
+					rollOutcome.incidentSpecificMultiplier,
 				vigilanteMultiplier: rollOutcome.vigilanteMultiplier,
 				avgArchetypeFit: rollOutcome.avgArchetypeFit,
 				staffingSupportMultiplier:
-				rollOutcome.staffingSupportMultiplier,
+					rollOutcome.staffingSupportMultiplier,
 				gearPresenceMultiplier: rollOutcome.gearPresenceMultiplier,
 				luckDeltaPercent: rollOutcome.luckDeltaPercent,
 			},
@@ -3691,36 +4285,36 @@ export default function StreetMapScene({
 					incidents: s.incidents.map((x) =>
 						x.id === id
 							? {
-									...x,
-									status: "resolved" as const,
-									deployedResourceIds: [],
-									resolution: {
-										success: rollOutcome.success,
-										adjustedPercent:
-											rollOutcome.adjustedPercent,
-										beforeLuckPercent:
-											rollOutcome.beforeLuckPercent,
-										rolled: rollOutcome.rolled,
-										baseChancePercent:
-											rollOutcome.baseChancePercent,
-										resourceMultiplier:
-											rollOutcome.resourceMultiplier,
-										buffMultiplier:
-											rollOutcome.buffMultiplier,
-										incidentSpecificMultiplier:
-											rollOutcome.incidentSpecificMultiplier,
-										vigilanteMultiplier:
-											rollOutcome.vigilanteMultiplier,
-										avgArchetypeFit:
-											rollOutcome.avgArchetypeFit,
-										staffingSupportMultiplier:
-											rollOutcome.staffingSupportMultiplier,
-										gearPresenceMultiplier:
-											rollOutcome.gearPresenceMultiplier,
-										luckDeltaPercent:
-											rollOutcome.luckDeltaPercent,
-									} as IncidentResolution,
-								}
+								...x,
+								status: "resolved" as const,
+								deployedResourceIds: [],
+								resolution: {
+									success: rollOutcome.success,
+									adjustedPercent:
+										rollOutcome.adjustedPercent,
+									beforeLuckPercent:
+										rollOutcome.beforeLuckPercent,
+									rolled: rollOutcome.rolled,
+									baseChancePercent:
+										rollOutcome.baseChancePercent,
+									resourceMultiplier:
+										rollOutcome.resourceMultiplier,
+									buffMultiplier:
+										rollOutcome.buffMultiplier,
+									incidentSpecificMultiplier:
+										rollOutcome.incidentSpecificMultiplier,
+									vigilanteMultiplier:
+										rollOutcome.vigilanteMultiplier,
+									avgArchetypeFit:
+										rollOutcome.avgArchetypeFit,
+									staffingSupportMultiplier:
+										rollOutcome.staffingSupportMultiplier,
+									gearPresenceMultiplier:
+										rollOutcome.gearPresenceMultiplier,
+									luckDeltaPercent:
+										rollOutcome.luckDeltaPercent,
+								} as IncidentResolution,
+							}
 							: x,
 					),
 				};
@@ -4209,6 +4803,35 @@ export default function StreetMapScene({
 		[state.incidents, state.selectedIncidentId],
 	);
 
+	const handleBombRecruitRewardClose = useCallback(() => {
+		setBombRewardIncidentId(null);
+	}, []);
+
+	const handleBombRecruitRewardConfirm = useCallback((vigilanteId: string) => {
+		const isNewRecruit = !stateRef.current.ownedVigilanteIds.includes(vigilanteId);
+
+		setState((s) => {
+			if (s.ownedVigilanteIds.includes(vigilanteId)) {
+				return s;
+			}
+
+			return {
+				...s,
+				ownedVigilanteIds: [...s.ownedVigilanteIds, vigilanteId],
+				careerStats: {
+					...s.careerStats,
+					vigilantesRecruited: s.careerStats.vigilantesRecruited + 1,
+				},
+			};
+		});
+
+		if (isNewRecruit) {
+			achievements.trackVigilanteRecruitment(vigilanteId);
+		}
+
+		setBombRewardIncidentId(null);
+	}, [achievements]);
+
 	const availableTheftSites = useMemo(
 		() =>
 			THEFT_SITES.filter(
@@ -4473,7 +5096,7 @@ export default function StreetMapScene({
 											{activeDossier.role}
 										</div>
 										{overlayMode === "recruit" &&
-										selectedRecruitLead ? (
+											selectedRecruitLead ? (
 											<div className="mt-3 rounded-xl border border-red-900/35 bg-red-950/15 px-3 py-2">
 												<div className="flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.16em] text-red-200/80">
 													<span>
@@ -4494,7 +5117,7 @@ export default function StreetMapScene({
 													}
 													onExpire={
 														isGameplayPausedByMinigame
-															? () => {}
+															? () => { }
 															: () =>
 																expireRecruitLead(
 																	selectedRecruitLead.id,
@@ -4620,10 +5243,10 @@ export default function StreetMapScene({
 										{dialogue.dialogueType === "past"
 											? "reminiscing"
 											: dialogue.dialogueType ===
-											"current"
+												"current"
 												? "responding"
 												: dialogue.dialogueType ===
-												"story"
+													"story"
 													? "story"
 													: ""}
 									</div>
@@ -4889,29 +5512,27 @@ export default function StreetMapScene({
 													inc.id,
 												)
 											}
-											className={`flex h-[92px] flex-col px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
-												isSelected
-													? "border-amber-500/80 bg-amber-900/50 text-amber-100"
-													: "border-amber-900/50 bg-black/40 text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100"
-											} w-full rounded-lg border`}
+											className={`flex h-[92px] flex-col px-3 py-2 text-left text-xs transition-colors cursor-pointer ${isSelected
+												? "border-amber-500/80 bg-amber-900/50 text-amber-100"
+												: "border-amber-900/50 bg-black/40 text-amber-200/70 hover:border-amber-700/70 hover:text-amber-100"
+												} w-full rounded-lg border`}
 										>
 											<div className="flex min-h-0 flex-1 flex-col justify-center">
 												<div className="flex h-[64px] w-full shrink-0 items-center gap-3">
 													<div
-														className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] ${
-															inc.status ===
+														className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] ${inc.status ===
 															"resolved"
-																? "border-amber-800/50 bg-amber-950/35 text-amber-200/70"
-																: inc.status ===
+															? "border-amber-800/50 bg-amber-950/35 text-amber-200/70"
+															: inc.status ===
 																"resolving"
-																	? "border-amber-700/60 bg-amber-950/40 text-amber-200"
-																	: "border-red-900 bg-red-900/30 text-red-300"
-														}`}
+																? "border-amber-700/60 bg-amber-950/40 text-amber-200"
+																: "border-red-900 bg-red-900/30 text-red-300"
+															}`}
 													>
 														{inc.status === "active"
 															? "!"
 															: inc.status ===
-															"resolving"
+																"resolving"
 																? "…"
 																: "·"}
 													</div>
@@ -4937,7 +5558,7 @@ export default function StreetMapScene({
 													)}
 													onExpire={
 														isGameplayPausedByMinigame
-															? () => {}
+															? () => { }
 															: () =>
 																expireIncident(
 																	inc.id,
@@ -5130,6 +5751,7 @@ export default function StreetMapScene({
 							onFailure={handleMinigameFailure}
 						/>
 					)}
+
 					{state.activeMinigame.type === "hack" && (
 						<HackMinigame
 							difficulty={state.activeMinigame.difficulty}
@@ -5139,6 +5761,104 @@ export default function StreetMapScene({
 					)}
 				</>
 			)}
+
+
+			{(state.activeMinigame?.type === "bomb_defusal" ||
+				(remoteBombIncidentId && remoteBombIncidentId !== dismissedRemoteBombIncidentId)) &&
+				!bombDefusalSession && (
+					<div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/80 px-4">
+						<div className="w-full max-w-xl rounded-xl border border-amber-900/40 bg-[#0d0c0e] p-6 shadow-2xl shadow-black/50">
+							<div className="text-[10px] uppercase tracking-[0.2em] text-amber-400/70">
+								Multiplayer Incident Minigame
+							</div>
+
+							<h2
+								className="mt-2 text-2xl font-bold tracking-tight text-amber-100"
+								style={{
+									fontFamily: "Georgia, 'Times New Roman', serif",
+									color: "#e4d5b7",
+								}}
+							>
+								Bomb Defusal
+							</h2>
+
+							<p className="mt-3 text-sm leading-6 text-amber-200/75">
+								{state.activeMinigame?.type === "bomb_defusal"
+									? "Bomb Defusal launched from this terminal. Opening the terminal will start Player A's live interface."
+									: "The other player launched Bomb Defusal. Opening the terminal will start Player B's live interface on this client."}
+							</p>
+
+							<div className="mt-5 rounded-lg border border-amber-900/35 bg-black/30 p-4 text-sm text-amber-200/70">
+								Current step complete:
+								<br />
+								- specific incident can trigger Bomb Defusal
+								<br />
+								- singleplayer does not trigger it
+								<br />
+								- the local terminal now opens the real Bomb Defusal modal instead of resolving immediately
+							</div>
+
+							<div className="mt-5 flex flex-wrap justify-end gap-3">
+								{state.activeMinigame?.type === "bomb_defusal" ? (
+									<>
+										<button
+											type="button"
+											onClick={handleMinigameFailure}
+											className="rounded-lg border border-amber-900/50 bg-black/40 px-4 py-2 text-sm text-amber-200/80 transition-all duration-200 hover:bg-amber-950/20 hover:border-amber-700/40 hover:text-amber-100"
+										>
+											Fail Incident
+										</button>
+
+										<button
+											type="button"
+											onClick={() => openBombDefusalTerminal("A")}
+											className="rounded-lg border border-amber-900/50 bg-black/40 px-4 py-2 text-sm font-semibold text-amber-100 transition-all duration-200 hover:bg-amber-950/20 hover:border-amber-700/40"
+										>
+											Resolve Successfully
+										</button>
+									</>
+							) : (
+								<>
+									<div className="rounded-lg border border-amber-900/35 bg-black/30 px-4 py-2 text-sm text-amber-200/70">
+										Player B terminal is opening automatically on this client.
+									</div>
+
+									<button
+										type="button"
+										onClick={handleDismissBombPlaceholder}
+										className="rounded-lg border border-amber-900/50 bg-black/40 px-4 py-2 text-sm text-amber-200/80 transition-all duration-200 hover:bg-amber-950/20 hover:border-amber-700/40 hover:text-amber-100"
+									>
+										Close
+									</button>
+								</>
+							)}
+							</div>
+						</div>
+					</div>
+				)}
+
+			{bombDefusalSession && bombDefusalRole && (
+				<BombDefusalModal
+					open
+					onClose={closeBombDefusalTerminal}
+					session={bombDefusalSession}
+					role={bombDefusalRole}
+					title="Bomb Defusal"
+					subtitle={bombDefusalRole === "A" ? "Player A terminal" : "Player B terminal"}
+					onCutWire={handleBombDefusalCutWire}
+					onClickSymbol={handleBombDefusalClickSymbol}
+					onSubmitPhase2={handleBombDefusalSubmitPhase2}
+					onRestart={bombDefusalRole === "A" ? handleBombDefusalRestart : undefined}
+				/>
+			)}
+
+			<BombRecruitRewardModal
+				open={bombRewardIncidentId !== null}
+				incidentId={bombRewardIncidentId}
+				ownedVigilanteIds={state.ownedVigilanteIds}
+				onClose={handleBombRecruitRewardClose}
+				onConfirm={handleBombRecruitRewardConfirm}
+			/>
 
 			<IncidentDeployModal
 				open={
@@ -5166,7 +5886,7 @@ export default function StreetMapScene({
 				onClose={() => setDeployModalOpen(false)}
 				onIncidentExpire={
 					isGameplayPausedByMinigame
-						? () => {}
+						? () => { }
 						: () => {
 							if (selectedIncident?.status === "active")
 								expireIncident(selectedIncident.id);
@@ -5315,12 +6035,19 @@ export default function StreetMapScene({
 			</div>
 
 			{/* Multiplayer pause overlay */}
-			{pausedByOther && (
+			{pausedByOther && !remoteBombIncidentId && (
 				<div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm">
 					<div className="rounded-2xl border border-amber-900/40 bg-black/60 px-8 py-6 text-center shadow-2xl">
-						<div className="w-6 h-6 mx-auto rounded-full border-2 border-amber-700/40 border-t-amber-300/80 animate-spin" aria-hidden />
-						<p className="mt-4 text-lg font-semibold text-amber-100">Game Paused</p>
-						<p className="mt-2 text-sm text-amber-200/60">The other player is in a minigame. Waiting for them to finish…</p>
+						<div
+							className="w-6 h-6 mx-auto rounded-full border-2 border-amber-700/40 border-t-amber-300/80 animate-spin"
+							aria-hidden
+						/>
+						<p className="mt-4 text-lg font-semibold text-amber-100">
+							Game Paused
+						</p>
+						<p className="mt-2 text-sm text-amber-200/60">
+							The other player is in a minigame. Waiting for them to finish…
+						</p>
 					</div>
 				</div>
 			)}
