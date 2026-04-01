@@ -4481,13 +4481,13 @@ export default function StreetMapScene({
 		const getSpawnIntervalForLevel = (level: number) => {
 			switch (level) {
 				case 1:
-					return 30_000;
-				case 2:
 					return 20_000;
-				case 3:
+				case 2:
 					return 15_000;
+				case 3:
+					return 10_000;
 				default:
-					return 30_000;
+					return 20_000;
 			}
 		};
 
